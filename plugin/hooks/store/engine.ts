@@ -64,6 +64,7 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
   const bakFile = joinPath(homeDir, "todos.json.bak")
   const lockDir = joinPath(homeDir, "store.lock")
   const ownerFile = joinPath(lockDir, "owner.json")
+  const breakDir = joinPath(homeDir, "store.lock.break")
 
   // Reads and classifies todos.json. A parse failure is retried (a foreign writer may be mid-write).
   async function readState(): Promise<State> {
@@ -89,52 +90,99 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
     }
   }
 
-  async function readOwner(): Promise<{ token: string | null; ts: number | null }> {
-    let raw: string | null = null
+  // The owner of a lock directory, or null when owner.json is missing, unreadable or not {token: string, ts: integer >= 0}
+  // (the same rule as the Rust engine, so the two judge one lock alike).
+  async function readOwner(dir: string): Promise<{ token: string; ts: number } | null> {
     try {
-      raw = await io.readText(ownerFile)
+      const raw = await io.readText(joinPath(dir, "owner.json"))
+      if (raw === null) return null
+      const o = JSON.parse(raw) as { token?: unknown; ts?: unknown } | null
+      if (o === null || typeof o.token !== "string" || typeof o.ts !== "number" || !Number.isInteger(o.ts) || o.ts < 0) return null
+      return { token: o.token, ts: o.ts }
     } catch {
-      return { token: null, ts: null }
-    }
-    if (raw === null) return { token: null, ts: null }
-    try {
-      const v: unknown = JSON.parse(raw)
-      const o = v as { token?: unknown; ts?: unknown }
-      return {
-        token: typeof o.token === "string" ? o.token : null,
-        ts: typeof o.ts === "number" && Number.isFinite(o.ts) ? o.ts : null,
-      }
-    } catch {
-      return { token: null, ts: null }
+      return null
     }
   }
 
-  // True only when a stale lock was actually renamed away (the caller retries mkdir at once).
+  type Judgement = { kind: "fresh" } | { kind: "gone" } | { kind: "stale"; token: string | null }
+
+  async function judge(): Promise<Judgement> {
+    const owner = await readOwner(lockDir)
+    if (owner !== null) return io.now() - owner.ts > lockStaleMs ? { kind: "stale", token: owner.token } : { kind: "fresh" }
+    let m: number | null
+    try {
+      m = await io.mtimeMs(lockDir)
+    } catch {
+      return { kind: "fresh" }
+    }
+    if (m === null) return { kind: "gone" }
+    return io.now() - m > lockStaleMs ? { kind: "stale", token: null } : { kind: "fresh" }
+  }
+
+  // Section 5, "Breaking a stale lock". Breakers are serialised through the exclusive directory store.lock.break and
+  // re-judge under it; without that, a second breaker holding the same stale judgement renames away the FRESH lock the
+  // first breaker's successor just created. True only when a stale lock was really removed (retry mkdir at once).
   async function breakIfStale(warnings: Warning[]): Promise<boolean> {
-    const owner = await readOwner()
-    let ts = owner.ts
-    if (ts === null) {
-      const m = await io.mtimeMs(lockDir)
-      if (m === null) return false // released while we looked
-      ts = m
-    }
-    if (io.now() - ts <= lockStaleMs) return false
-    // Narrow the break-vs-break race: only proceed if the owner is still the one we judged stale.
-    const again = await readOwner()
-    if (again.token !== owner.token) return false
-    const gone = lockDir + ".stale-" + randomToken(io.random)
-    try {
-      await io.rename(lockDir, gone)
-    } catch {
-      return false // another breaker won, the owner released, or the rename is not permitted
+    const first = await judge()
+    if (first.kind !== "stale") return false
+    if (!(await io.mkdirExclusive(breakDir))) {
+      // A crashed breaker's guard must not wedge the store: one older than lockStaleMs is removed (we still back off once).
+      try {
+        const m = await io.mtimeMs(breakDir)
+        if (m !== null && io.now() - m > lockStaleMs) await io.removeTree(breakDir)
+      } catch {
+        // best effort
+      }
+      return false
     }
     try {
-      await io.removeTree(gone)
-    } catch {
-      // leftover renamed directory is harmless
+      const j = await judge()
+      if (j.kind !== "stale" || !(await breakStale(j.token))) return false
+    } finally {
+      try {
+        await io.removeTree(breakDir)
+      } catch {
+        // an old guard is cleared by the next breaker
+      }
     }
     if (!warnings.includes("stale_lock_broken")) warnings.push("stale_lock_broken")
     return true
+  }
+
+  // Rename the stale lock away (atomic), then verify that what we renamed is the lock we judged. If a live lock was
+  // swapped in between the judgement and the rename, put it back and do not claim the break.
+  async function breakStale(judged: string | null): Promise<boolean> {
+    const moved = lockDir + ".stale-" + randomToken(io.random)
+    try {
+      await io.rename(lockDir, moved)
+    } catch {
+      return false // the owner released, or the rename is not permitted
+    }
+    let same = false
+    try {
+      const o = await readOwner(moved)
+      if (judged !== null) same = o !== null && o.token === judged
+      else if (o === null) {
+        const m = await io.mtimeMs(moved)
+        same = m !== null && io.now() - m > lockStaleMs
+      }
+    } catch {
+      same = false
+    }
+    if (!same) {
+      try {
+        await io.rename(moved, lockDir)
+        return false
+      } catch {
+        // could not restore (the directory name is taken again): fall through and drop the copy, as the Rust engine does
+      }
+    }
+    try {
+      await io.removeTree(moved)
+    } catch {
+      // leftover renamed directory is harmless
+    }
+    return same
   }
 
   async function tryCreateLock(token: string): Promise<boolean> {
@@ -170,11 +218,8 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
 
   async function release(token: string): Promise<void> {
     try {
-      const raw = await io.readText(ownerFile)
-      if (raw !== null) {
-        const o = await readOwner()
-        if (o.token !== null && o.token !== token) return // someone else's lock now: leave it
-      }
+      const o = await readOwner(lockDir)
+      if (o !== null && o.token !== token) return // someone else's lock now: leave it
       await io.removeTree(lockDir)
     } catch {
       // nothing more can be done; a stale lock expires

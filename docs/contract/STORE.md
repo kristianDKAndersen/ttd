@@ -51,6 +51,10 @@ Window position/size is NOT stored here (Tauri window-state plugin keeps it in t
   after trim, no code point < U+0020. `body` string, 0..10000 code points (any characters). `status` is
   `todo | in_progress | done`. `order` integer. `createdAt`/`updatedAt` ISO-8601 UTC with milliseconds
   and `Z` (`2026-01-01T09:00:00.000Z`), supplied by the caller's clock.
+- Stored strings (`title`, `body`, `id`, unknown fields) MUST be well-formed Unicode: no unpaired surrogates in
+  UTF-16 (JS), valid UTF-8 (Rust). A lone surrogate is not representable in UTF-8: JS `JSON.stringify` writes it as
+  a `\udXXX` escape, and the Rust reader turns it into U+FFFD, so the two implementations would read different
+  values from one file. Behaviour for such input is undefined (callers must not pass it; the fixtures never do).
 - Lengths are counted in Unicode code points (JS: `[...s].length`; Rust: `chars().count()`), never UTF-16
   units or bytes (fixture 04 checks this).
 - `trim` removes only these characters from both ends: U+0009-U+000D, U+0020, U+00A0, U+2028, U+2029,
@@ -132,10 +136,37 @@ surfaces as `io_error` if the directory really is missing).
 - After acquiring, write `store.lock/owner.json`: `{"token": <12 chars>, "pid": n, "ts": <epoch ms>}`.
 - Contended: sleep 10-40 ms (random jitter) and retry until `lockTimeoutMs`, then `lock_timeout`
   (nothing changed; the foreign lock is NOT removed).
-- Stale: held lock whose `owner.json` `ts` is older than `lockStaleMs` (if `owner.json` is missing or
-  unparseable, use the lock directory's mtime) is broken by renaming `store.lock` to
-  `store.lock.stale-<token>` (atomic: only one breaker wins; the loser sees ENOENT and retries
-  `mkdir`), removing the renamed directory, and reporting warning `stale_lock_broken`.
+- Stale: held lock whose `owner.json` `ts` is older than `lockStaleMs` is stale. `owner.json` counts only if it
+  parses as an object with a string `token` and a non-negative integer `ts`; otherwise (missing, unparseable,
+  other shape) the lock directory's mtime is used instead. A lock that vanished while being judged is "gone":
+  retry `mkdir`. A `ts` in the future is not stale.
+- Breaking a stale lock (every implementation, same directory names). Renaming alone is NOT enough: two waiters
+  can judge the same stale `owner.json`, the first renames it away and a successor creates a FRESH lock, and
+  the second then renames that fresh lock away too, so two writers hold the lock (a lost update).
+  Breakers are therefore serialised through a second lock directory, and what was renamed is verified:
+
+  ```
+  judge store.lock                      stale (token T, or none if owner.json is unusable) / fresh / gone
+  stale: mkdir HOME_DIR/store.lock.break        (exclusive, the break guard)
+     exists => the guard is held: if the guard directory's mtime is older than lockStaleMs
+               (a crashed breaker) remove it; either way do NOT break, back off and retry
+     created => re-judge store.lock UNDER the guard; not stale any more => release guard, retry
+                rename store.lock -> store.lock.stale-<token>   (fails => someone released it: release guard, retry)
+                verify the renamed directory is the one judged:
+                   judged token T:      its owner.json token == T
+                   judged no token:     its owner.json is still unusable and its mtime is older than lockStaleMs
+                not the same (we took a live lock) => rename it back to store.lock; do NOT claim the break
+                   (if the name is taken again, remove the renamed copy)
+                same => remove the renamed directory, warning stale_lock_broken
+                remove store.lock.break in every case, then retry mkdir of store.lock
+  ```
+
+  The guard is held for milliseconds, only by breakers; a writer's own `mkdir store.lock` never touches it.
+  `lock_timeout` still applies while waiting on a guard, and an unbreakable stale lock is never removed
+  (nothing changed => `lock_timeout`). Crash recovery: a leftover `store.lock.break` is cleared by the next
+  breaker once it is older than `lockStaleMs`. A test that pre-creates `store.lock` with an old `ts` and
+  launches concurrent writers MUST end with every add present and `rev` equal to the number of effective
+  writes (`store-node/test/stale-race.test.ts`).
 - Release: read `owner.json`; if its `token` is ours (or unreadable), remove the whole directory
   (`rm -rf` / `cmd /c rmdir /s /q`). A writer whose lock was broken under it must not delete the
   successor's lock (token check); the CAS step is what protects the data in that case (fixture 05).
