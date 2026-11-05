@@ -4,3 +4,4 @@ app/dist
 .advisor-output
 *.log
 .DS_Store
+app/e2e/out
