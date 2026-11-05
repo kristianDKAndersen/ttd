@@ -1,0 +1,63 @@
+{
+  "fixture": 1,
+  "name": "11-fresh-lock-times-out",
+  "description": "A live lock (owner age 0) held by someone else: the writer polls with jitter until lockTimeoutMs (300 in this fixture) then fails with lock_timeout, changes nothing and does NOT remove the foreign lock.",
+  "options": {
+    "lockTimeoutMs": 300
+  },
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 5,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        }
+      ]
+    },
+    "bak": null,
+    "lock": {
+      "ownerAgeMs": 0
+    }
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T18:00:00.000Z",
+      "op": {
+        "op": "add",
+        "title": "blocked"
+      },
+      "expect": {
+        "ok": false,
+        "error": "lock_timeout"
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 5,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": true,
+    "tmpFiles": 0,
+    "bakExists": false
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "fixture": 1,
+  "name": "09-unknown-fields-preserved",
+  "description": "Forward compatibility: unknown top-level and per-item fields written by a newer client survive a read-modify-write by this client unchanged.",
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 1,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z",
+          "color": "red",
+          "tags": [
+            "a"
+          ]
+        }
+      ],
+      "meta": {
+        "theme": "x",
+        "n": 1
+      }
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T16:00:00.000Z",
+      "op": {
+        "op": "set_status",
+        "id": "t1",
+        "status": "in_progress"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "One",
+            "body": "",
+            "status": "in_progress",
+            "order": 0,
+            "createdAt": "2026-01-01T08:00:00.000Z",
+            "updatedAt": "2026-01-01T16:00:00.000Z",
+            "color": "red",
+            "tags": [
+              "a"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 2,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "in_progress",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T16:00:00.000Z",
+          "color": "red",
+          "tags": [
+            "a"
+          ]
+        }
+      ],
+      "meta": {
+        "theme": "x",
+        "n": 1
+      }
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "fixture": 1,
+  "name": "01-add-status-update-delete",
+  "description": "Happy path from an absent file: add x3 (rev 0->3), set_status, update (title is trimmed), delete (order renormalised).",
+  "setup": {
+    "file": null,
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T09:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t1",
+        "title": "Write plan",
+        "body": "first draft"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 1,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "Write plan",
+            "body": "first draft",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T09:00:00.000Z",
+            "updatedAt": "2026-01-01T09:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T09:01:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t2",
+        "title": "Review"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t2",
+            "title": "Review",
+            "body": "",
+            "status": "todo",
+            "order": 1,
+            "createdAt": "2026-01-01T09:01:00.000Z",
+            "updatedAt": "2026-01-01T09:01:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T09:02:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t3",
+        "title": "Ship",
+        "body": "go",
+        "status": "in_progress"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 3,
+        "result": {
+          "item": {
+            "id": "t3",
+            "title": "Ship",
+            "body": "go",
+            "status": "in_progress",
+            "order": 2,
+            "createdAt": "2026-01-01T09:02:00.000Z",
+            "updatedAt": "2026-01-01T09:02:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T09:03:00.000Z",
+      "op": {
+        "op": "set_status",
+        "id": "t1",
+        "status": "done"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 4,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "Write plan",
+            "body": "first draft",
+            "status": "done",
+            "order": 0,
+            "createdAt": "2026-01-01T09:00:00.000Z",
+            "updatedAt": "2026-01-01T09:03:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T09:04:00.000Z",
+      "op": {
+        "op": "update",
+        "id": "t2",
+        "title": "  Review plan  ",
+        "body": "check mockup"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 5,
+        "result": {
+          "item": {
+            "id": "t2",
+            "title": "Review plan",
+            "body": "check mockup",
+            "status": "todo",
+            "order": 1,
+            "createdAt": "2026-01-01T09:01:00.000Z",
+            "updatedAt": "2026-01-01T09:04:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T09:05:00.000Z",
+      "op": {
+        "op": "delete",
+        "id": "t3"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 6,
+        "result": {
+          "id": "t3"
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 6,
+      "items": [
+        {
+          "id": "t1",
+          "title": "Write plan",
+          "body": "first draft",
+          "status": "done",
+          "order": 0,
+          "createdAt": "2026-01-01T09:00:00.000Z",
+          "updatedAt": "2026-01-01T09:03:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Review plan",
+          "body": "check mockup",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T09:01:00.000Z",
+          "updatedAt": "2026-01-01T09:04:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true
+  }
+}

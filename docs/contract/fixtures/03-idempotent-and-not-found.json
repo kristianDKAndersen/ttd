@@ -1,0 +1,181 @@
+{
+  "fixture": 1,
+  "name": "03-idempotent-and-not-found",
+  "description": "Re-adding an existing id, deleting a missing id, same-value updates are ok/changed=false and never write (rev and file mtime unchanged). update/set_status/move on a missing id is not_found. update with neither title nor body is invalid_op.",
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 2,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        }
+      ]
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T11:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t2",
+        "title": "dup title is ignored"
+      },
+      "expect": {
+        "ok": true,
+        "changed": false,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t2",
+            "title": "Two",
+            "body": "",
+            "status": "todo",
+            "order": 1,
+            "createdAt": "2026-01-01T08:01:00.000Z",
+            "updatedAt": "2026-01-01T08:01:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T11:01:00.000Z",
+      "op": {
+        "op": "delete",
+        "id": "nope"
+      },
+      "expect": {
+        "ok": true,
+        "changed": false,
+        "rev": 2,
+        "result": {
+          "id": "nope"
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T11:02:00.000Z",
+      "op": {
+        "op": "update",
+        "id": "nope",
+        "title": "x"
+      },
+      "expect": {
+        "ok": false,
+        "error": "not_found"
+      }
+    },
+    {
+      "now": "2026-01-01T11:03:00.000Z",
+      "op": {
+        "op": "set_status",
+        "id": "t1",
+        "status": "todo"
+      },
+      "expect": {
+        "ok": true,
+        "changed": false,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "One",
+            "body": "",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T08:00:00.000Z",
+            "updatedAt": "2026-01-01T08:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T11:04:00.000Z",
+      "op": {
+        "op": "update",
+        "id": "t1"
+      },
+      "expect": {
+        "ok": false,
+        "error": "invalid_op"
+      }
+    },
+    {
+      "now": "2026-01-01T11:05:00.000Z",
+      "op": {
+        "op": "update",
+        "id": "t1",
+        "title": "One"
+      },
+      "expect": {
+        "ok": true,
+        "changed": false,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "One",
+            "body": "",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T08:00:00.000Z",
+            "updatedAt": "2026-01-01T08:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T11:06:00.000Z",
+      "op": {
+        "op": "delete",
+        "id": "t1"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 3,
+        "result": {
+          "id": "t1"
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 3,
+      "items": [
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "fixture": 1,
+  "name": "13-read-absent-file",
+  "description": "A missing file reads as the empty document (rev 0) and the read does not create it.",
+  "setup": {
+    "file": null,
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T19:01:00.000Z",
+      "read": true,
+      "expect": {
+        "ok": true,
+        "doc": {
+          "schemaVersion": 1,
+          "rev": 0,
+          "items": []
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": "absent",
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": false
+  }
+}
