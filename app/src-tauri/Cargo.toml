@@ -1,0 +1,33 @@
+[package]
+name = "ttd"
+version = "0.1.0"
+edition = "2021"
+description = "TTD window: always-on-top todo list (Tauri v2 shell around the ttd-store crate)"
+publish = false
+
+[lib]
+name = "ttd_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ttd"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+tauri-plugin-window-state = "=2.5.0"
+tauri-plugin-single-instance = "=2.5.5"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+time = { version = "=0.3.55", features = ["formatting", "macros"] }
+ttd-store = { path = "../../crates/ttd-store" }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[features]
+# `tauri build` turns this on: the binary then embeds `frontendDist` instead of loading `devUrl`.
+custom-protocol = ["tauri/custom-protocol"]

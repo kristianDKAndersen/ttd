@@ -5,3 +5,4 @@ app/dist
 *.log
 .DS_Store
 app/e2e/out
+app/src-tauri/gen
