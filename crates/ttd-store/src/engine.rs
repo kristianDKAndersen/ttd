@@ -60,8 +60,8 @@ pub fn home_dir_from(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     non_empty("HOME").map(|h| PathBuf::from(h).join(".ttd"))
 }
 
-/// The commit rename (tmp -> todos.json). A seam for fault injection (EPERM on Windows); production
-/// uses [`StdRenamer`].
+/// The commit rename (tmp -> todos.json) and the stale-lock break renames. A seam for fault injection
+/// (EPERM on Windows); production uses [`StdRenamer`].
 pub trait Renamer: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 }
@@ -443,8 +443,9 @@ impl Store {
                                 }
                                 continue;
                             }
-                            Break::Attempted => continue,
-                            Break::Busy => {}
+                            // Not broken (rename refused, lost race, guard held): back off and honour the
+                            // deadline below, as the TS engine does; never retry in a tight loop.
+                            Break::Attempted | Break::Busy => {}
                         },
                         Judgement::Fresh => {}
                     }
@@ -507,7 +508,7 @@ impl Store {
     /// rename, put it back and do not claim the break.
     fn break_stale(&self, lock: &Path, judged: &Judged) -> bool {
         let moved = self.home.join(format!("{LOCK}.stale-{}", token()));
-        if fs::rename(lock, &moved).is_err() {
+        if self.renamer.rename(lock, &moved).is_err() {
             return false;
         }
         let same = match (&judged.token, read_owner(&moved)) {
@@ -518,7 +519,7 @@ impl Store {
                 .unwrap_or(false),
             _ => false,
         };
-        if !same && fs::rename(&moved, lock).is_ok() {
+        if !same && self.renamer.rename(&moved, lock).is_ok() {
             return false;
         }
         let _ = fs::remove_dir_all(&moved);

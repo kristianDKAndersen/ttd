@@ -715,3 +715,52 @@ fn only_one_of_many_stale_breakers_wins_repeatedly() {
         assert_eq!(count_prefix(&home, "store.lock"), 0, "round {round}");
     }
 }
+
+/// Fails every rename of `store.lock` itself (the stale-lock break), so a stale lock can never be broken.
+/// After `VALVE` calls it lets renames through so a spinning engine ends the test instead of hanging it.
+struct UnbreakableLock {
+    calls: AtomicU32,
+}
+impl UnbreakableLock {
+    const VALVE: u32 = 5_000;
+}
+impl Renamer for UnbreakableLock {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if from.file_name().is_some_and(|f| f == "store.lock") && n < Self::VALVE {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected"));
+        }
+        fs::rename(from, to)
+    }
+}
+
+#[test]
+fn unbreakable_stale_lock_times_out_without_busy_spinning() {
+    let (_t, home) = setup();
+    fs::create_dir_all(&home).unwrap();
+    make_lock(&home, 60_000);
+    let renamer = Arc::new(UnbreakableLock { calls: AtomicU32::new(0) });
+    let store = Store::new(&home).with_options(fast(300, 1_000)).with_renamer(renamer.clone());
+    let started = Instant::now();
+    let r = add(&store, "t1", "x");
+    let elapsed = started.elapsed();
+    let calls = renamer.calls.load(Ordering::SeqCst);
+    assert!(calls < 200, "break attempts must back off between tries, got {calls} renames in {elapsed:?}");
+    assert_eq!(r.unwrap_err().code, ErrorCode::LockTimeout);
+    assert!(elapsed >= Duration::from_millis(300) && elapsed < Duration::from_millis(2_300), "elapsed {elapsed:?}");
+    assert!(home.join("store.lock").exists(), "the unbreakable lock is left alone");
+    assert!(!home.join("store.lock.break").exists(), "the break guard is released");
+    assert_eq!(count_prefix(&home, "store.lock.stale-"), 0);
+}
+
+#[test]
+fn held_break_guard_over_a_stale_lock_times_out_and_leaves_both_alone() {
+    let (_t, home) = setup();
+    fs::create_dir_all(home.join("store.lock.break")).unwrap();
+    make_lock(&home, 60_000);
+    let store = Store::new(&home).with_options(fast(300, 60_000_000));
+    let started = Instant::now();
+    assert_eq!(add(&store, "t1", "x").unwrap_err().code, ErrorCode::LockTimeout);
+    assert!(started.elapsed() < Duration::from_millis(2_300));
+    assert!(home.join("store.lock").exists() && home.join("store.lock.break").exists());
+}
