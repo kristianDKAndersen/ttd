@@ -13,6 +13,44 @@ Status: beta, v0.1.0. The pieces are a Claude Code plugin (the "mod", `plugin/`)
 specified in `docs/contract/STORE.md`. Design and decisions: `docs/DECISIONS.md`, `docs/plan/plan.md`.
 Anything marked "unverified" below has not been exercised yet.
 
+## Quick start
+
+1. **Open the window.** Download a build or build it yourself (section 2), then open `TTD.app`. It floats
+   above other windows; drag it by its header.
+2. **Start Claude Code with the plugin.** Install it (section 1), or from a checkout of this repo run
+   `claude --plugin-dir ./plugin`.
+3. **Use either side.** Add a todo in the window and ask Claude "what's on my todo list?", or tell Claude
+   "add a todo to review PR 12 and mark it in progress" and watch the window update.
+
+### In the window
+
+| To | Do |
+|---|---|
+| Add a todo | **+**, type a title (body optional), then the check button, Enter in Title, or click anywhere outside the form |
+| Cancel a form | the x button or Esc |
+| See the body and actions | click the todo |
+| Edit a todo | click it, then the pencil |
+| Start / finish | click it, then play (blue, in progress) or check (green, done) |
+| Delete | click it, then the trash (no undo) |
+| Reorder | drag a row |
+
+Grey = not started, blue = in progress, green = done.
+
+### From Claude Code
+
+| Command | What it does |
+|---|---|
+| `/ttd` | open the window, or focus it if it is already open |
+| `/ttd list` | print the list with ids |
+| `/ttd add <title>` | add a todo |
+| `/ttd start <id>` / `done <id>` / `todo <id>` | set in progress / done / not started |
+| `/ttd rm <id>` | delete a todo |
+| `/ttd recover` | restore a damaged list from its backup |
+| `/ttd help` | all sub-commands |
+
+You can also ask in plain words ("what should I work on next?", "mark the login bug done", "move the release
+task to the top"). The agent has its own TTD tools and sees changes you make in the window on your next message.
+
 ## 1. Install the plugin
 
 In a Claude Code session:
