@@ -41,6 +41,8 @@ const ICONS = {
   trash: ['M3 6h18', 'M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2', 'M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6', 'M10 11v6', 'M14 11v6'],
   play: ['M6 3L20 12L6 21V3Z'],
   check: ['M4 12.5l5 5L20 6'],
+  edit: ['M12 20h9', 'M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z'],
+  cancel: ['M6 6l12 12', 'M18 6L6 18'],
 } as const
 
 // ---------------------------------------------------------------- small helpers
@@ -58,16 +60,18 @@ function sortItems(items: readonly Item[]): Item[] {
 
 interface RowView {
   el: HTMLLIElement
+  head: HTMLElement
   toggle: HTMLElement
   title: HTMLElement
   body: HTMLElement
   actions: HTMLElement
+  edit: HTMLButtonElement
   trash: HTMLButtonElement
   play: HTMLButtonElement
   check: HTMLButtonElement
 }
 
-function actionButton(kind: 'trash' | 'play' | 'check', label: string): HTMLButtonElement {
+function actionButton(kind: 'edit' | 'trash' | 'play' | 'check', label: string): HTMLButtonElement {
   const b = el('button', `act ${kind}`)
   b.type = 'button'
   b.setAttribute('aria-label', label)
@@ -86,14 +90,15 @@ function createRow(id: string): RowView {
   const title = el('span', 'row-title')
   toggle.appendChild(title)
   const actions = el('div', 'row-actions')
+  const edit = actionButton('edit', 'Edit')
   const trash = actionButton('trash', 'Delete')
   const play = actionButton('play', 'In progress')
   const check = actionButton('check', 'Done')
-  actions.append(trash, play, check)
+  actions.append(edit, trash, play, check)
   head.append(toggle, actions)
   const body = el('div', 'row-body')
   li.append(head, body)
-  return { el: li, toggle, title, body, actions, trash, play, check }
+  return { el: li, head, toggle, title, body, actions, edit, trash, play, check }
 }
 
 interface Banner {
@@ -120,6 +125,28 @@ interface DragCandidate {
   startY: number
 }
 
+/** The one open form: adding (id null) or editing an item. `base*` is the item as it was when the editor opened. */
+interface Editor {
+  id: string | null
+  baseTitle: string
+  baseBody: string
+  form: HTMLFormElement
+  title: HTMLInputElement
+  body: HTMLTextAreaElement
+  hint: HTMLElement
+}
+
+type CommitHow = 'explicit' | 'outside'
+
+function formButton(kind: 'save' | 'cancel', label: string): HTMLButtonElement {
+  const b = el('button', `form-btn ${kind}`)
+  b.type = 'button'
+  b.setAttribute('aria-label', label)
+  b.title = label
+  b.appendChild(icon([...ICONS[kind === 'save' ? 'check' : 'cancel']]))
+  return b
+}
+
 interface Drag {
   id: string
   grabY: number
@@ -136,8 +163,8 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
   let doc: Doc | null = null
   let banner: Banner | null = null
   let expandedId: string | null = null
-  let formOpen = false
-  let submitting = false
+  let editor: Editor | null = null
+  let inflight: Promise<boolean> | null = null
   let cand: DragCandidate | null = null
   let drag: Drag | null = null
   let pending: ReadResult | null = null
@@ -261,13 +288,24 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
   function render(): void {
     if (destroyed) return
     const ro = readOnly()
-    if (ro && formOpen) closeForm(false)
+    if (ro && editor) closeEditor(false)
     addBtn.disabled = ro
     renderBanner()
-    renderForm()
     const items = doc ? sortItems(doc.items) : []
     if (expandedId && !items.some((i) => i.id === expandedId)) expandedId = null
+    if (editor && editor.id !== null && !items.some((i) => i.id === editor!.id)) {
+      closeEditor(false)
+      toast('This todo was deleted elsewhere, so the edit was closed.')
+    }
+    // Re-inserting a row that holds the focused field makes a real browser blur it; put the focus and caret back.
+    const active = document.activeElement
+    const sel = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? ([active.selectionStart, active.selectionEnd, active.selectionDirection] as const) : null
     reconcile(items, ro)
+    renderEditor()
+    if (editor && active instanceof HTMLElement && editor.form.contains(active) && document.activeElement !== active) {
+      active.focus()
+      if (sel && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && sel[0] !== null && sel[1] !== null) active.setSelectionRange(sel[0], sel[1], sel[2] ?? undefined)
+    }
     opts.onRender?.(items.length)
   }
 
@@ -328,93 +366,176 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
   function patchRow(v: RowView, it: Item, ro: boolean): void {
     const open = it.id === expandedId
     v.el.dataset.status = it.status
+    const editing = editor !== null && editor.id === it.id
     v.el.classList.toggle('expanded', open)
+    v.el.classList.toggle('editing', editing)
+    v.head.hidden = editing
     v.el.classList.toggle('dragging', drag?.id === it.id)
     if (v.title.textContent !== it.title) v.title.textContent = it.title
     if (v.body.textContent !== it.body) v.body.textContent = it.body
-    v.body.hidden = !open || it.body === ''
+    v.body.hidden = editing || !open || it.body === ''
     v.actions.hidden = !open
     v.toggle.setAttribute('aria-expanded', String(open))
     v.play.setAttribute('aria-pressed', String(it.status === 'in_progress'))
     v.check.setAttribute('aria-pressed', String(it.status === 'done'))
-    v.trash.disabled = v.play.disabled = v.check.disabled = ro
+    v.edit.disabled = v.trash.disabled = v.play.disabled = v.check.disabled = ro
   }
 
-  // ---- add form (the element and its text outlive every re-render)
+  // ---- editor: the add form and the inline edit form (the element and its text outlive every re-render)
 
-  let formEl: HTMLFormElement | null = null
-  let fTitle: HTMLInputElement
-  let fBody: HTMLTextAreaElement
-
-  function buildForm(): HTMLFormElement {
+  function buildEditor(id: string | null, baseTitle: string, baseBody: string): Editor {
     const f = el('form', 'new-form')
     f.noValidate = true
-    fTitle = el('input', 'f-title')
-    fTitle.type = 'text'
-    fTitle.name = 'title'
-    fTitle.placeholder = 'Title'
-    fTitle.autocomplete = 'off'
-    fTitle.setAttribute('aria-label', 'Title')
-    fBody = el('textarea', 'f-body')
-    fBody.name = 'body'
-    fBody.placeholder = 'Body'
-    fBody.rows = 3
-    fBody.setAttribute('aria-label', 'Body')
-    f.append(fTitle, fBody)
+    const t = el('input', 'f-title')
+    t.type = 'text'
+    t.name = 'title'
+    t.placeholder = 'Title'
+    t.autocomplete = 'off'
+    t.setAttribute('aria-label', 'Title')
+    t.setAttribute('aria-describedby', 'f-title-hint')
+    t.value = baseTitle
+    const hint = el('span', 'f-hint', 'Title needed')
+    hint.id = 'f-title-hint'
+    hint.setAttribute('role', 'alert')
+    hint.hidden = true
+    const b = el('textarea', 'f-body')
+    b.name = 'body'
+    b.placeholder = 'Body'
+    b.rows = 3
+    b.setAttribute('aria-label', 'Body')
+    b.value = baseBody
+    const actions = el('div', 'form-actions')
+    const save = formButton('save', 'Save')
+    const cancel = formButton('cancel', 'Cancel')
+    actions.append(save, cancel)
+    f.append(t, hint, b, actions)
+    const ed: Editor = { id, baseTitle, baseBody, form: f, title: t, body: b, hint }
     f.addEventListener('submit', (e) => e.preventDefault())
-    fTitle.addEventListener('input', () => fTitle.removeAttribute('aria-invalid'))
-    fTitle.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.isComposing) {
+    t.addEventListener('input', () => {
+      t.removeAttribute('aria-invalid')
+      hint.hidden = true
+    })
+    // keyCode 229 is how WebKit reports the Enter that confirms an IME composition, with isComposing already false.
+    t.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault()
-        void submitForm()
+        void commit('explicit')
       }
     })
-    fBody.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+    b.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault()
-        void submitForm()
+        void commit('explicit')
       }
     })
-    f.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        closeForm(true)
-      }
-    })
-    return f
+    save.addEventListener('click', () => void commit('explicit'))
+    cancel.addEventListener('click', () => cancelEditor())
+    return ed
   }
 
-  function renderForm(): void {
-    if (formOpen) {
-      if (!formEl) {
-        formEl = buildForm()
-        formHost.appendChild(formEl)
-        fTitle.focus()
-      }
-    } else if (formEl) {
-      formEl.remove()
-      formEl = null
-    }
+  function renderEditor(): void {
+    if (!editor) return
+    const host = editor.id === null ? formHost : views.get(editor.id)?.el
+    if (host && editor.form.parentNode !== host) host.appendChild(editor.form)
   }
 
-  function closeForm(redraw: boolean): void {
-    formOpen = false
+  function onEditorKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape' || e.defaultPrevented || cand || drag) return
+    e.preventDefault()
+    cancelEditor()
+  }
+
+  /** Any primary press outside the form saves it (rules in commit). The openers (+, pencil, window x) decide in their click handler instead: a press-time save would move the layout under the click. */
+  function onEditorPointerDown(e: PointerEvent): void {
+    if (!editor || e.button !== 0) return
+    const node = e.target as Node | null
+    if (node && editor.form.contains(node)) return
+    if (node instanceof Element && node.closest('.add, .close, .act.edit')) return
+    void commit('outside')
+  }
+
+  function closeEditor(redraw: boolean, focusRow = false): void {
+    if (!editor) return
+    const ed = editor
+    editor = null
+    document.removeEventListener('pointerdown', onEditorPointerDown, true)
+    document.removeEventListener('keydown', onEditorKeydown)
+    ed.form.remove()
     if (redraw) render()
-    else renderForm()
+    if (focusRow && ed.id !== null) views.get(ed.id)?.toggle.focus()
   }
 
-  async function submitForm(): Promise<void> {
-    if (submitting || readOnly() || !formEl) return
-    const t = fTitle.value.trim()
+  function cancelEditor(): void {
+    closeEditor(true, true)
+  }
+
+  function flagTitle(ed: Editor): void {
+    ed.title.setAttribute('aria-invalid', 'true')
+    ed.hint.hidden = false
+    ed.title.focus()
+  }
+
+  /**
+   * Save the open form. Resolves true when the form is closed afterwards, false when it stays open.
+   * 'explicit' (Enter, Ctrl/Cmd+Enter, the check button) flags an empty title; 'outside' (a press elsewhere, opening another
+   * form, the window x) closes silently when title and body are both empty and flags only when a body would be lost.
+   */
+  function commit(how: CommitHow): Promise<boolean> {
+    if (!editor) return Promise.resolve(true)
+    if (inflight) return inflight
+    const p: Promise<boolean> = runCommit(editor, how).finally(() => {
+      if (inflight === p) inflight = null
+    })
+    inflight = p
+    return p
+  }
+
+  async function runCommit(ed: Editor, how: CommitHow): Promise<boolean> {
+    const t = ed.title.value.trim()
+    const b = ed.body.value.trim()
     if (!t) {
-      fTitle.setAttribute('aria-invalid', 'true')
-      fTitle.focus()
-      return
+      if (how === 'outside' && !b) {
+        closeEditor(true)
+        return true
+      }
+      flagTitle(ed)
+      return false
     }
-    submitting = true
-    const ok = await send({ op: 'add', title: t, body: fBody.value.trim() })
-    submitting = false
-    if (ok && !destroyed) closeForm(true)
+    let op: Op | null
+    if (ed.id === null) op = { op: 'add', title: t, body: b }
+    else {
+      // Only fields the user changed since the editor opened: an untouched field must not overwrite an agent's concurrent edit.
+      const patch: { title?: string; body?: string } = {}
+      if (t !== ed.baseTitle.trim()) patch.title = t
+      if (b !== ed.baseBody.trim()) patch.body = b
+      op = patch.title === undefined && patch.body === undefined ? null : { op: 'update', id: ed.id, ...patch }
+    }
+    if (op && !(await send(op))) return false
+    if (destroyed || editor !== ed) return true
+    closeEditor(true, how === 'explicit')
+    return true
+  }
+
+  async function openEditor(id: string | null): Promise<void> {
+    if (readOnly()) return
+    if (inflight) await inflight
+    if (editor && !(await commit('outside'))) return
+    if (readOnly() || editor || destroyed) return
+    let baseTitle = ''
+    let baseBody = ''
+    if (id !== null) {
+      const it = doc?.items.find((i) => i.id === id)
+      if (!it) return
+      baseTitle = it.title
+      baseBody = it.body
+      expandedId = id
+    }
+    editor = buildEditor(id, baseTitle, baseBody)
+    document.addEventListener('pointerdown', onEditorPointerDown, true)
+    document.addEventListener('keydown', onEditorKeydown)
+    render()
+    editor.title.focus()
+    editor.title.setSelectionRange(baseTitle.length, baseTitle.length)
   }
 
   // ---- reorder
@@ -525,7 +646,7 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
   function onPointerDown(e: PointerEvent): void {
     if (readOnly() || cand || e.button !== 0 || e.isPrimary === false) return
     const t = e.target as Element
-    if (t.closest('.act')) return
+    if (t.closest('.act, .new-form')) return
     const rowEl = t.closest('li.row') as HTMLElement | null
     if (!rowEl || !t.closest('.row-head') || !rowEl.dataset.id) return
     cand = { id: rowEl.dataset.id, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY }
@@ -549,6 +670,7 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
   list.addEventListener('pointerdown', onPointerDown)
   list.addEventListener('click', (e) => {
     const t = e.target as Element
+    if (t.closest('.new-form')) return
     const rowEl = t.closest('li.row') as HTMLElement | null
     const id = rowEl?.dataset.id
     if (!rowEl || !id) return
@@ -556,7 +678,8 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
     if (btn) {
       const it = doc?.items.find((i) => i.id === id)
       if (!it || btn.disabled || readOnly()) return
-      if (btn.classList.contains('trash')) void send({ op: 'delete', id })
+      if (btn.classList.contains('edit')) void openEditor(id)
+      else if (btn.classList.contains('trash')) void send({ op: 'delete', id })
       else if (btn.classList.contains('play')) setStatus(it, 'in_progress')
       else if (btn.classList.contains('check')) setStatus(it, 'done')
       return
@@ -576,14 +699,15 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
 
   addBtn.addEventListener('click', () => {
     if (readOnly()) return
-    if (formOpen) closeForm(true)
-    else {
-      formOpen = true
-      render()
-      fTitle.focus()
-    }
+    if (editor && editor.id === null) editor.title.focus()
+    else void openEditor(null)
   })
-  closeBtn?.addEventListener('click', () => backend.close?.())
+  closeBtn?.addEventListener('click', () => {
+    if (!editor && !inflight) return backend.close?.()
+    void commit('outside').then((closed) => {
+      if (closed) backend.close?.()
+    })
+  })
   bannerHost.addEventListener('click', (e) => {
     const t = e.target as Element
     if (t.closest('.reset')) void send({ op: 'reset_corrupt' })
@@ -605,6 +729,9 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
       unsubscribe()
       clearTimeout(toastTimer)
       cand = null
+      editor = null
+      document.removeEventListener('pointerdown', onEditorPointerDown, true)
+      document.removeEventListener('keydown', onEditorKeydown)
       drag?.ghost.remove()
       endDrag()
       root.replaceChildren()

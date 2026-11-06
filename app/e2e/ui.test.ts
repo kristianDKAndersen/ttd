@@ -448,7 +448,7 @@ describe("E7 screenshots of the five mockup stages", () => {
         await e.page.click(".add")
         await e.page.locator(".f-title").waitFor()
         await shot("2-add-form.png")
-        await e.page.click(".add") // close it again
+        await e.page.keyboard.press("Escape") // close it again
 
         // 3. six todos, the sixth expanded with its body
         await seed(e, SIX, (t) => (t === SIX[5] ? "some more information on the task i need to do some task i need to do. ".repeat(6) : ""))
@@ -481,5 +481,292 @@ describe("E7 screenshots of the five mockup stages", () => {
     const written = readdirSync(OUT).filter((f) => /^[1-5]-.*\.png$/.test(f)).sort()
     expect(written).toEqual(["1-no-tasks.png", "2-add-form.png", "3-expanded.png", "4-dragging.png", "5-status-colours.png"])
     for (const f of written) expect(Bun.file(join(OUT, f)).size).toBeGreaterThan(2000)
+  })
+})
+
+// ---------------------------------------------------------------- E8 save anywhere, save button, edit
+
+const idOf = (e: Env, t: string) => e.todos().items.find((i) => i.title === t)!.id
+/** A press on the header title: outside every form, and nothing under it moves when a form closes. */
+const clickOutside = (e: Env) => e.page.locator(".head .title").click()
+const noWrite = (e: Env) => expect(existsSync(join(e.home, "todos.json"))).toBe(false)
+/** What the OS delivers when the user switches to another app: field blur + focusout, window blur, page hidden. No clicks. */
+const deactivate = (e: Env) =>
+  e.page.evaluate(() => {
+    const a = document.activeElement as HTMLElement | null
+    a?.dispatchEvent(new FocusEvent("blur"))
+    a?.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }))
+    window.dispatchEvent(new Event("blur"))
+    document.dispatchEvent(new Event("visibilitychange"))
+  })
+
+describe("E8 add and edit forms save without the keyboard", () => {
+  test("add: title and body, then a click outside the form writes the todo and closes the form", async () => {
+    await withApp(async (e) => {
+      await open(e)
+      await e.page.click(".add")
+      await e.page.locator(".f-title").fill("Saved by click outside")
+      await e.page.locator(".f-body").fill("body typed, no keyboard shortcut")
+      await clickOutside(e)
+      await row(e, "Saved by click outside").waitFor({ timeout: 3000 })
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      expect(e.todos().items).toHaveLength(1)
+      expect(e.todos().items[0]).toMatchObject({ title: "Saved by click outside", body: "body typed, no keyboard shortcut", status: "todo" })
+    })
+  })
+
+  test("add: an empty form closes silently on a click outside; a body without a title stays open and is flagged", async () => {
+    await withApp(async (e) => {
+      await open(e)
+      await e.page.click(".add")
+      await clickOutside(e)
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      noWrite(e)
+      await e.page.click(".add")
+      await e.page.locator(".f-body").fill("orphan body")
+      await clickOutside(e)
+      await expect(e.page.locator(".f-title").getAttribute("aria-invalid")).resolves.toBe("true")
+      await expect(e.page.locator(".f-hint").textContent()).resolves.toBe("Title needed")
+      await expect(e.page.locator(".f-hint").isVisible()).resolves.toBe(true)
+      await expect(e.page.locator(".f-body").inputValue()).resolves.toBe("orphan body")
+      noWrite(e)
+    })
+  })
+
+  test("add: the visible check button saves; the x cancels; both are reachable by Tab after the body", async () => {
+    await withApp(async (e) => {
+      await open(e)
+      await e.page.click(".add")
+      await e.page.locator(".f-title").fill("Saved by the button")
+      await e.page.keyboard.press("Tab")
+      await expect(e.page.evaluate(() => document.activeElement?.className)).resolves.toBe("f-body")
+      await e.page.keyboard.press("Tab")
+      await expect(e.page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).resolves.toBe("Save")
+      await e.page.keyboard.press("Tab")
+      await expect(e.page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).resolves.toBe("Cancel")
+      await e.page.locator(".new-form .save").click()
+      await row(e, "Saved by the button").waitFor({ timeout: 3000 })
+      expect(e.titles()).toEqual(["Saved by the button"])
+
+      await e.page.click(".add")
+      await e.page.locator(".f-title").fill("Cancelled")
+      await e.page.locator(".new-form .cancel").click()
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      expect(e.titles()).toEqual(["Saved by the button"])
+    })
+  })
+
+  test("add: the window losing focus saves nothing and keeps the draft (blur, focusout, visibilitychange, no clicks)", async () => {
+    await withApp(async (e) => {
+      await open(e)
+      await e.page.click(".add")
+      await e.page.locator(".f-title").fill("draft title")
+      await e.page.locator(".f-body").fill("draft body")
+      await deactivate(e)
+      await e.page.waitForTimeout(400)
+      await expect(e.page.locator(".new-form").count()).resolves.toBe(1)
+      await expect(e.page.locator(".f-title").inputValue()).resolves.toBe("draft title")
+      await expect(e.page.locator(".f-body").inputValue()).resolves.toBe("draft body")
+      noWrite(e)
+    })
+  })
+
+  test("+ while the form is open focuses it instead of saving or opening a second one", async () => {
+    await withApp(async (e) => {
+      await open(e)
+      await e.page.click(".add")
+      await e.page.locator(".f-title").fill("still typing")
+      await e.page.locator(".f-body").click()
+      await e.page.click(".add")
+      await expect(e.page.locator(".new-form").count()).resolves.toBe(1)
+      await expect(e.page.evaluate(() => document.activeElement?.className)).resolves.toBe("f-title")
+      await expect(e.page.locator(".f-title").inputValue()).resolves.toBe("still typing")
+      noWrite(e)
+    })
+  })
+
+  test("edit: the pencil, new title and body, then a click outside writes only that item", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["keep me", "edit me", "leave me"], (t) => `body of ${t}`)
+      await open(e)
+      const before = e.todos()
+      await row(e, "edit me").locator(".row-toggle").click()
+      await row(e, "edit me").locator(".act.edit").click()
+      await expect(e.page.locator("li.row.editing .f-title").inputValue()).resolves.toBe("edit me")
+      await expect(e.page.locator("li.row.editing .f-body").inputValue()).resolves.toBe("body of edit me")
+      await expect(e.page.evaluate(() => document.activeElement?.className)).resolves.toBe("f-title")
+      await e.page.locator(".f-title").fill("edited title")
+      await e.page.locator(".f-body").fill("edited body\nsecond line")
+      await clickOutside(e)
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      await pollEqual(() => e.titles(), ["keep me", "edited title", "leave me"], 3000)
+      const after = e.todos()
+      expect(after.rev).toBe(before.rev + 1)
+      const it = after.items.find((i) => i.id === idOf(e, "edited title"))!
+      expect(it).toMatchObject({ title: "edited title", body: "edited body\nsecond line", status: "todo" })
+      expect(after.items.map((i) => i.body)).toEqual(["body of keep me", "edited body\nsecond line", "body of leave me"])
+      await expect(e.rows()).resolves.toEqual(["keep me", "edited title", "leave me"])
+    })
+  })
+
+  test("edit: changing only the body sends only the body; an unchanged editor writes nothing", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["solo"], () => "old body")
+      await open(e)
+      const rev = e.todos().rev
+      await row(e, "solo").locator(".row-toggle").click()
+      await row(e, "solo").locator(".act.edit").click()
+      await clickOutside(e)
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      expect(e.todos().rev).toBe(rev)
+      await row(e, "solo").locator(".act.edit").click()
+      await e.page.locator(".f-body").fill("new body")
+      await e.page.locator(".new-form .save").click()
+      await pollEqual(() => e.todos().items[0]!.body, "new body", 3000)
+      expect(e.todos().items[0]!.title).toBe("solo")
+      expect(e.todos().rev).toBe(rev + 1)
+    })
+  })
+
+  test("edit: Escape cancels without writing; the row keeps its text", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["original"], () => "original body")
+      await open(e)
+      const before = readFileSync(join(e.home, "todos.json"), "utf8")
+      await row(e, "original").locator(".row-toggle").click()
+      await row(e, "original").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("typed but cancelled")
+      await e.page.locator(".f-body").fill("also cancelled")
+      await e.page.keyboard.press("Escape")
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      await e.page.waitForTimeout(300)
+      expect(readFileSync(join(e.home, "todos.json"), "utf8")).toBe(before)
+      await expect(e.rows()).resolves.toEqual(["original"])
+      await expect(row(e, "original").locator(".row-body").textContent()).resolves.toBe("original body")
+    })
+  })
+
+  test("edit: the window losing focus does not save the edit", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["original"])
+      await open(e)
+      const before = readFileSync(join(e.home, "todos.json"), "utf8")
+      await row(e, "original").locator(".row-toggle").click()
+      await row(e, "original").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("half edited")
+      await deactivate(e)
+      await e.page.waitForTimeout(400)
+      await expect(e.page.locator("li.row.editing").count()).resolves.toBe(1)
+      await expect(e.page.locator(".f-title").inputValue()).resolves.toBe("half edited")
+      expect(readFileSync(join(e.home, "todos.json"), "utf8")).toBe(before)
+    })
+  })
+
+  test("only one form: pressing another row saves the open edit; the second row's pencil then opens the second form", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["first", "second"])
+      await open(e)
+      await row(e, "first").locator(".row-toggle").click()
+      await row(e, "first").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("first (edited)")
+      await row(e, "second").locator(".row-toggle").click() // the press saves; the click may land on a row that just moved
+      await pollEqual(() => e.titles(), ["first (edited)", "second"], 3000)
+      await e.page.locator(".new-form").waitFor({ state: "detached" })
+      if (!((await row(e, "second").getAttribute("class")) ?? "").includes("expanded")) await row(e, "second").locator(".row-toggle").click()
+      await row(e, "second").locator(".act.edit").click()
+      await expect(e.page.locator("li.row.editing .f-title").inputValue()).resolves.toBe("second")
+      await expect(e.page.locator(".new-form").count()).resolves.toBe(1)
+    })
+  })
+
+  test("edit: an agent reordering rows past the edited row keeps the form, the typed text, the caret and the focus", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["r1", "r2", "r3", "r4"])
+      await open(e)
+      await row(e, "r2").locator(".row-toggle").click()
+      await row(e, "r2").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("typed text")
+      await e.page.locator(".f-title").evaluate((el) => (el as HTMLInputElement).setSelectionRange(2, 5))
+      await e.cli({ op: "move", id: idOf(e, "r4"), after: null }) // r4 jumps above the row being edited
+      await e.cli({ op: "move", id: idOf(e, "r1"), after: idOf(e, "r2") }) // and r1 jumps below it
+      await pollEqual(() => e.rows(), ["r4", "r2", "r1", "r3"], 3000)
+      await expect(e.page.locator(".new-form").count()).resolves.toBe(1)
+      await expect(e.page.evaluate(() => document.activeElement?.className)).resolves.toBe("f-title")
+      await expect(e.page.locator(".f-title").inputValue()).resolves.toBe("typed text")
+      await expect(e.page.locator(".f-title").evaluate((el) => [(el as HTMLInputElement).selectionStart, (el as HTMLInputElement).selectionEnd])).resolves.toEqual([2, 5])
+    })
+  })
+
+  test("edit: an agent changing the same item keeps the typed text; the user's save wins and the agent's other field survives", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["shared"], () => "orig body")
+      await open(e)
+      await row(e, "shared").locator(".row-toggle").click()
+      await row(e, "shared").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("user title")
+      await e.cli({ op: "update", id: idOf(e, "shared"), title: "agent title", body: "agent body" })
+      await e.page.waitForTimeout(1300) // let the watcher publish the agent's write to the open page
+      await expect(e.page.locator(".f-title").inputValue()).resolves.toBe("user title")
+      await clickOutside(e)
+      await pollEqual(() => e.titles(), ["user title"], 3000)
+      expect(e.todos().items[0]!.body).toBe("agent body")
+    })
+  })
+
+  test("edit: the item deleted by an agent while being edited closes the editor with a notice", async () => {
+    await withApp(async (e) => {
+      await seed(e, ["doomed", "survivor"])
+      await open(e)
+      await row(e, "doomed").locator(".row-toggle").click()
+      await row(e, "doomed").locator(".act.edit").click()
+      await e.page.locator(".f-title").fill("typing into the void")
+      await e.cli({ op: "delete", id: idOf(e, "doomed") })
+      await e.page.locator(".new-form").waitFor({ state: "detached", timeout: 3000 })
+      await expect(e.page.locator(".toast").textContent()).resolves.toContain("deleted")
+      await expect(e.rows()).resolves.toEqual(["survivor"])
+    })
+  })
+
+  test("a press inside the edit form does not start a drag", async () => {
+    await withApp(async (e) => {
+      await seed(e, FIVE)
+      await open(e)
+      await row(e, "T3").locator(".row-toggle").click()
+      await row(e, "T3").locator(".act.edit").click()
+      const box = (await e.page.locator("li.row.editing .f-body").boundingBox())!
+      await e.page.mouse.move(box.x + 20, box.y + 10)
+      await e.page.mouse.down()
+      for (let i = 1; i <= 10; i++) await e.page.mouse.move(box.x + 20, box.y + 10 - i * 15)
+      await expect(e.page.locator(".ghost").count()).resolves.toBe(0)
+      await e.page.mouse.up()
+      await expect(e.page.locator("li.row.editing").count()).resolves.toBe(1)
+      expect(e.titles()).toEqual(FIVE)
+    })
+  })
+})
+
+describe("E9 screenshots of the add and edit forms", () => {
+  test("writes app/e2e/out/{6-add-form,7-edit-form}.png", async () => {
+    mkdirSync(OUT, { recursive: true })
+    await withApp(
+      async (e) => {
+        await seed(e, SIX, (t) => (t === SIX[2] ? "some more information on the task i need to do." : ""))
+        await open(e)
+        await e.page.click(".add")
+        await e.page.locator(".f-title").fill("Write the release notes")
+        await e.page.locator(".f-body").fill("Mention the new save and edit controls.")
+        await e.page.waitForTimeout(150)
+        await e.page.screenshot({ path: join(OUT, "6-add-form.png") })
+        await e.page.keyboard.press("Escape")
+        await e.page.locator(".new-form").waitFor({ state: "detached" })
+        await row(e, SIX[2]!).locator(".row-toggle").click()
+        await row(e, SIX[2]!).locator(".act.edit").click()
+        await e.page.locator(".f-title").fill("some task i need to do 3 (reworded)")
+        await e.page.waitForTimeout(150)
+        await e.page.screenshot({ path: join(OUT, "7-edit-form.png") })
+      },
+      { viewport: { width: 320, height: 480 }, scale: 2 },
+    )
+    for (const f of ["6-add-form.png", "7-edit-form.png"]) expect(Bun.file(join(OUT, f)).size).toBeGreaterThan(2000)
   })
 })

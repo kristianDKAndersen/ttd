@@ -205,7 +205,11 @@ export interface Harness {
   row: (id: string) => HTMLElement
 }
 
+let previous: App | null = null
+
 export async function mountApp(items: Item[] = [], opts: { withClose?: boolean; toastMs?: number; configure?: (f: FakeBackend) => void } = {}): Promise<Harness> {
+  previous?.destroy() // document-level listeners of an earlier mount must not fire in this test
+  previous = null
   while (document.body.firstChild) document.body.removeChild(document.body.firstChild)
   stubLayout()
   const fake = new FakeBackend(items, opts.withClose)
@@ -214,6 +218,7 @@ export async function mountApp(items: Item[] = [], opts: { withClose?: boolean; 
   root.id = 'app'
   document.body.appendChild(root)
   const app = mount(root, fake, { toastMs: opts.toastMs })
+  previous = app
   await flush()
   const rows = () => $$('li.row', root)
   return {

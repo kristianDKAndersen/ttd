@@ -3,8 +3,8 @@
 TTD is a tiny todo list that lives in a floating, always-on-top window next to Claude Code, and that the
 agent can read and update too. You and the agent share one local file (`~/.ttd/todos.json`), so a todo you
 add in the window is visible to Claude and the other way round. Writes are atomic and conflict-safe (lock, revision check, retry), because
-losing an item is the one thing this tool exists to prevent. Click a todo to expand it (body, trash, play =
-in progress, check = done), drag to reorder; grey = not started, blue = in progress, green = done.
+losing an item is the one thing this tool exists to prevent. Click a todo to expand it (body, pencil = edit,
+trash, play = in progress, check = done), drag to reorder; grey = not started, blue = in progress, green = done.
 
 ![TTD mockup](docs/mockup.png)
 
@@ -83,6 +83,13 @@ Run the window once: it records its own path in `~/.ttd/app.json`, which is how 
 
 ## 3. Use it
 
+- In the window: **+** opens the Title / Body form. Save it with the check button, Enter in Title, Cmd/Ctrl+Enter
+  in Body, or by clicking anywhere in the window outside the form (the form closes silently if both fields are
+  empty; a body without a title stays open with "Title needed"). The x button or Esc cancels. Switching to
+  another app never saves or closes a draft. To change a todo, expand it and press the pencil: the row turns into
+  the same form, prefilled, with the same save and cancel rules, and only the fields you changed are written (so
+  an agent's edit to a field you did not touch is kept). One form is open at a time; opening another saves the
+  first. Pressing **+** while the add form is open just focuses it.
 - `/ttd` in Claude Code launches the window; a second launch focuses the existing one. If no window is
   installed it prints the install steps and the release link.
 - Sub-commands: `/ttd list`, `add <title>`, `start|todo|done <id>`, `rm <id>`, `recover`, `path`, and
