@@ -56,16 +56,169 @@ test("a not-yet-existing TTD_HOME is created and the write is fast (no lock_time
   expect(readDoc(home).rev).toBe(1)
 })
 
-test("file format: pretty JSON, trailing newline, bak is the previous content", async () => {
+test("file format: pretty JSON, trailing newline, bak is a byte-identical copy of the latest commit", async () => {
   const home = tmpHome()
   const store = createStore(createNodeIO(), home)
   await store.apply(add("one", "a"), { now: NOW })
   const first = readFileSync(join(home, "todos.json"), "utf8")
   expect(first).toBe(text(readDoc(home)))
   expect(first.endsWith("}\n")).toBe(true)
-  expect(existsSync(join(home, "todos.json.bak"))).toBe(false) // nothing existed before the first commit
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(first) // even the first commit has a bak
   await store.apply(add("two", "b"), { now: NOW })
-  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(first)
+  const second = readFileSync(join(home, "todos.json"), "utf8")
+  expect(second).not.toBe(first)
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(second)
+  expect(tmpFiles(home)).toEqual([])
+})
+
+test("no-op ops leave bak as it was (it still equals todos.json)", async () => {
+  const home = tmpHome()
+  const store = createStore(createNodeIO(), home)
+  await store.apply(add("one", "a"), { now: NOW })
+  await store.apply(add("again", "a"), { now: NOW }) // idempotent add: changed false
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
+})
+
+// ---- the bak contract (STORE.md section 8): latest commit, atomic, recovery never loses an acknowledged write ----
+
+/** An IO that records every call and can fail chosen ones. `todosAbsent` collects every call after which todos.json was missing. */
+function spyIO(home: string, fail: (call: string, args: string[]) => boolean = () => false) {
+  const base = createNodeIO()
+  const calls: string[] = []
+  const todosAbsent: string[] = []
+  const existedAtStart = existsSync(join(home, "todos.json"))
+  const tap = <A extends string[], R>(name: string, f: (...a: A) => Promise<R>) => async (...a: A): Promise<R> => {
+    const label = `${name}(${a.map((x) => x.replace(home, "")).join(", ")})`
+    calls.push(label)
+    if (fail(name, a)) throw new Error(`injected failure in ${label}`)
+    const r = await f(...a)
+    if (existedAtStart && !existsSync(join(home, "todos.json"))) todosAbsent.push(label)
+    return r
+  }
+  const io = {
+    ...base,
+    writeText: tap("writeText", (p: string, t: string) => base.writeText(p, t)),
+    rename: tap("rename", (f: string, t: string) => base.rename(f, t)),
+    removeTree: tap("removeTree", (p: string) => base.removeTree(p)),
+    copyFile: tap("copyFile", (f: string, t: string) => (base as any).copyFile(f, t)),
+  } as unknown as IO
+  return { io, calls, todosAbsent }
+}
+
+test("bak is written atomically (tmp then rename), never with a direct write to todos.json.bak", async () => {
+  const home = tmpHome()
+  const spy = spyIO(home)
+  const store = createStore(spy.io, home)
+  await store.apply(add("one", "a"), { now: NOW })
+  await store.apply(add("two", "b"), { now: NOW })
+  expect(spy.calls.filter((c) => c.startsWith("writeText(/todos.json.bak"))).toEqual([])
+  expect(spy.calls.filter((c) => /^rename\(\/\.todos\.json\.tmp-[a-z0-9]+, \/todos\.json\.bak\)$/.test(c)).length).toBe(2)
+})
+
+test("bak is renamed in after the commit rename, so a crash between them leaves bak one version behind", async () => {
+  const home = tmpHome()
+  const store0 = createStore(createNodeIO(), home)
+  await store0.apply(add("one", "a"), { now: NOW })
+  const v1 = readFileSync(join(home, "todos.json"), "utf8")
+  // "crash" at the bak rename of the second commit: the commit itself must already be durable, the bak one behind
+  const spy = spyIO(home, (name, a) => name === "rename" && a[1]!.endsWith("todos.json.bak"))
+  const r = await createStore(spy.io, home).apply(add("two", "b"), { now: NOW })
+  expect(r.ok).toBe(true)
+  expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(v1)
+  expect(tmpFiles(home)).toEqual([]) // the unused bak temp file is removed
+  // and the next successful commit catches the bak up
+  await store0.apply(add("three", "c"), { now: NOW })
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
+})
+
+test("a bak that cannot be written fails the op BEFORE the commit: nothing changes, no temp file left", async () => {
+  const home = tmpHome()
+  const store0 = createStore(createNodeIO(), home)
+  await store0.apply(add("one", "a"), { now: NOW })
+  const before = readFileSync(join(home, "todos.json"), "utf8")
+  let writes = 0
+  const spy = spyIO(home, (name) => name === "writeText" && ++writes === 2) // 1st = new todos tmp, 2nd = bak tmp
+  const r = await createStore(spy.io, home).apply(add("two", "b"), { now: NOW })
+  expect(r.ok === false && r.error).toBe("io_error")
+  expect(readFileSync(join(home, "todos.json"), "utf8")).toBe(before)
+  expect(tmpFiles(home)).toEqual([])
+  expect(existsSync(join(home, "store.lock"))).toBe(false)
+})
+
+test("restoring from bak after corruption loses NO acknowledged write, including the last status flip", async () => {
+  const home = tmpHome()
+  const store = createStore(createNodeIO(), home)
+  await store.apply(add("one", "a"), { now: NOW })
+  await store.apply(add("two", "b"), { now: NOW })
+  await store.apply({ op: "set_status", id: "b", status: "in_progress" }, { now: NOW }) // the last acknowledged write
+  const rev = readDoc(home).rev
+  const live = readFileSync(join(home, "todos.json"), "utf8")
+  const torn = live.slice(0, Math.floor(live.length / 2))
+  writeFileSync(join(home, "todos.json"), torn)
+  const r = await store.apply(add("three", "c"), { now: NOW })
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  expect(r.ok && r.rev).toBe(rev + 1)
+  const d = readDoc(home)
+  expect(d.items.map((i) => [i.id, i.status])).toEqual([["a", "todo"], ["b", "in_progress"], ["c", "todo"]])
+  const q = ls(home).filter((f) => f.startsWith("todos.corrupt-"))
+  expect(q.length).toBe(1)
+  expect(readFileSync(join(home, q[0]!), "utf8")).toBe(torn)
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
+})
+
+test("m3: todos.json is never absent while a corrupt file is quarantined and replaced (every IO step checked)", async () => {
+  const home = tmpHome()
+  put(home, "todos.json", '{"rev":9,"items":[')
+  put(home, "todos.json.bak", docOf(["a"], 4))
+  const spy = spyIO(home)
+  const r = await createStore(spy.io, home).apply(add("b", "b"), { now: NOW })
+  expect(r.ok).toBe(true)
+  expect(spy.todosAbsent).toEqual([])
+  expect(ls(home).filter((f) => f.startsWith("todos.corrupt-")).length).toBe(1)
+})
+
+test("m3: a crash before the final rename leaves the corrupt todos.json in place, plus a valid bak; the next writer recovers", async () => {
+  const home = tmpHome()
+  const torn = '{"rev":9,"items":[{"id":"a'
+  put(home, "todos.json", torn)
+  put(home, "todos.json.bak", docOf(["a"], 4))
+  const spy = spyIO(home, (name, a) => name === "rename" && a[1]!.endsWith("/todos.json"))
+  const r = await createStore(spy.io, home).apply(add("b", "b"), { now: NOW })
+  expect(r.ok === false && r.error).toBe("io_error")
+  expect(readFileSync(join(home, "todos.json"), "utf8")).toBe(torn) // still there, still the same bytes
+  expect(JSON.parse(readFileSync(join(home, "todos.json.bak"), "utf8")).rev).toBe(4)
+  expect(tmpFiles(home)).toEqual([])
+  expect(spy.todosAbsent).toEqual([])
+  const r2 = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
+  expect(r2.ok && r2.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
+  for (const f of ls(home).filter((x) => x.startsWith("todos.corrupt-"))) expect(readFileSync(join(home, f), "utf8")).toBe(torn)
+})
+
+test("node IO copyFile: byte-identical, survives the source being replaced by a rename", async () => {
+  const home = tmpHome()
+  const raw = Buffer.from([0xff, 0x00, 0x80, 0x0a])
+  writeFileSync(join(home, "src"), raw)
+  const io = createNodeIO() as any
+  await io.copyFile(join(home, "src"), join(home, "copy"))
+  writeFileSync(join(home, "next"), "other")
+  await io.rename(join(home, "next"), join(home, "src"))
+  expect(readFileSync(join(home, "copy")).equals(raw)).toBe(true)
+  await expect(io.copyFile(join(home, "missing"), join(home, "c2"))).rejects.toThrow()
+  expect(existsSync(join(home, "c2"))).toBe(false)
+})
+
+test("quarantine is byte-identical for non-UTF-8 content", async () => {
+  const home = tmpHome()
+  const raw = Buffer.from([0xff, 0xfe, ...Buffer.from('{"rev" :  41, garbage '), 0x00, 0x80])
+  writeFileSync(join(home, "todos.json"), raw)
+  put(home, "todos.json.bak", docOf(["a"], 2))
+  const r = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
+  expect(r.ok && r.rev).toBe(42)
+  const q = ls(home).filter((f) => f.startsWith("todos.corrupt-"))
+  expect(q.length).toBe(1)
+  expect(readFileSync(join(home, q[0]!)).equals(raw)).toBe(true)
 })
 
 test("no-op ops and validation errors do not write: content, mtime and rev unchanged, no bak, no tmp", async () => {
@@ -108,7 +261,7 @@ test("tmp file is removed on a CAS conflict and the op is re-applied on the new 
       put(home, "todos.json", docOf(["x", "f"], 2))
     },
   })
-  expect(seen.length).toBe(1) // the temp file existed at the seam
+  expect(seen.length).toBe(2) // the todos temp file and the bak temp file existed at the seam
   expect(r.ok && r.attempts).toBe(2)
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["x", "f", "m"])
   expect(readDoc(home).rev).toBe(3)
@@ -240,7 +393,7 @@ test("stale lock (old owner.json ts) is broken: warning, lock gone, stale dir re
   writeFileSync(join(home, "store.lock", "owner.json"), JSON.stringify({ token: "dead", pid: 1, ts: Date.now() - 60000 }))
   const r = await createStore(createNodeIO(), home).apply(add("a"), { now: NOW })
   expect(r.ok && r.warnings).toEqual(["stale_lock_broken"])
-  expect(ls(home)).toEqual(["todos.json"])
+  expect(ls(home)).toEqual(["todos.json", "todos.json.bak"])
 })
 
 test("stale rule honours lockStaleMs and falls back to the lock dir mtime without owner.json", async () => {
@@ -379,16 +532,15 @@ test("corrupt + valid bak + an op that fails validation: nothing is quarantined 
   expect(readFileSync(join(home, "todos.json"), "utf8")).toBe('{"rev":9,"items":[')
 })
 
-test("corrupt + valid bak + no-op op: still writes (rev jumps), reports changed:true, bak untouched", async () => {
+test("corrupt + valid bak + no-op op: still writes (rev jumps), reports changed:true, bak becomes the restored file", async () => {
   const home = tmpHome()
   put(home, "todos.json", '{"rev":9,"items":[')
   put(home, "todos.json.bak", docOf(["a"], 4))
-  const bakBefore = readFileSync(join(home, "todos.json.bak"), "utf8")
   const r = await createStore(createNodeIO(), home).apply({ op: "delete", id: "zz" }, { now: NOW })
   expect(r.ok && r.changed).toBe(true)
   expect(r.ok && r.rev).toBe(10)
   expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
-  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(bakBefore)
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["a"])
 })
 
@@ -411,6 +563,7 @@ test("reset_corrupt with a valid bak restores the bak (never an empty list over 
   expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
   expect(ls(home).filter((f) => f.startsWith("todos.corrupt-")).length).toBe(1)
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
 })
 
 test("reset_corrupt on an absent or healthy file is not_corrupt and writes nothing", async () => {

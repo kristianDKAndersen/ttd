@@ -1,9 +1,9 @@
 // A half-written todos.json is never overwritten or silently dropped (STORE.md section 8; plan claim C07).
 // With a valid .bak every implementation recovers; without one every implementation refuses until reset_corrupt.
 //
-// What "no acknowledged item is lost" can mean here: .bak is the file as it was just BEFORE the last commit, so the
-// effect of that single last commit lives only in the destroyed bytes. Each round therefore ends the clean history
-// with a set_status (it changes no item set), so any lost state is a status flip, never an acknowledged item.
+// .bak is a byte-identical copy of the LATEST committed todos.json (STORE.md section 8), so restoring from it loses
+// no acknowledged write at all: every round ends the clean history with a status flip, written by one implementation,
+// destroys the file, recovers with another implementation, and then asserts the flip is still there.
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, readFileSync, truncateSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -36,18 +36,22 @@ test("truncated todos.json + valid .bak: each of TS, Rust and the mod restores, 
     rev = r.env.rev
   }
 
-  for (const impl of IMPLS) {
-    // a clean add (acknowledged), then a clean status flip, so that .bak holds every item
-    const clean = await apply("ts", home, { op: "add", id: `clean-${impl}`, title: `clean-${impl}` })
+  const flipped: string[] = []
+  for (const [i, writer] of IMPLS.entries()) {
+    const impl = IMPLS[(i + 1) % IMPLS.length]! // the implementation that recovers; the writer is a different one
+    // a clean add and then a clean status flip: the flip is the LAST acknowledged write before the corruption
+    const clean = await apply(writer, home, { op: "add", id: `clean-${writer}`, title: `clean-${writer}` })
     expect(clean.env?.ok, say(clean)).toBe(true)
-    acked.push(`clean-${impl}`)
-    const flip = await apply("ts", home, { op: "set_status", id: `clean-${impl}`, status: "in_progress" })
+    acked.push(`clean-${writer}`)
+    const flip = await apply(writer, home, { op: "set_status", id: `clean-${writer}`, status: "in_progress" })
     expect(flip.env?.ok, say(flip)).toBe(true)
     expect(flip.env.changed).toBe(true)
+    flipped.push(`clean-${writer}`)
     rev = flip.env.rev
     expect(rawDoc(home).rev).toBe(rev)
     const bakBefore = readFileSync(bak(home), "utf8")
-    expect(JSON.parse(bakBefore).rev, "bak is the state before the last commit").toBe(rev - 1)
+    expect(bakBefore, `${writer}: bak is a byte-identical copy of the latest commit`).toBe(readFileSync(todos(home), "utf8"))
+    expect(JSON.parse(bakBefore).rev).toBe(rev)
 
     const cut = truncateToHalf(home)
     truncations.push(cut)
@@ -63,14 +67,18 @@ test("truncated todos.json + valid .bak: each of TS, Rust and the mod restores, 
     rev = r.env.rev
     acked.push(`recovered-by-${impl}`)
 
-    // the corrupt bytes were quarantined byte-identical, once; the .bak was left as found
+    // the corrupt bytes were quarantined byte-identical, once; the .bak never held corrupt content and now equals the new commit
     const newQ = quarantined(home).filter((q) => !quarantineBefore.includes(q))
     expect(newQ.length, `${impl}: exactly one new quarantine file`).toBe(1)
     expect(readFileSync(join(home, newQ[0]!), "utf8")).toBe(cut)
-    expect(readFileSync(bak(home), "utf8"), `${impl}: .bak must not be overwritten with corrupt content`).toBe(bakBefore)
+    expect(readFileSync(bak(home), "utf8"), `${impl}: .bak equals the restored commit`).toBe(readFileSync(todos(home), "utf8"))
 
     const doc = rawDoc(home) // the file parses again
     expect(doc.rev).toBe(rev)
+    // NO acknowledged write is lost: every status flip so far, including the one just before the corruption, survived
+    for (const id of flipped) {
+      expect(doc.items.find((it: any) => it.id === id)?.status, `${impl}: the acknowledged status flip of ${id} must survive`).toBe("in_progress")
+    }
     for (const t of acked) expect(titles(doc).filter((x) => x === t).length, `${impl}: "${t}" must be present exactly once`).toBe(1)
     expect(doc.items.length, impl).toBe(acked.length)
     expect(doc.items.map((i: any) => i.order)).toEqual(Array.from({ length: doc.items.length }, (_, i) => i))
@@ -81,7 +89,7 @@ test("truncated todos.json + valid .bak: each of TS, Rust and the mod restores, 
       expect(rd.env.ok, `${impl} then ${reader} read`).toBe(true)
       expect(rd.env.doc).toEqual(doc)
     }
-    console.log(`corrupt-cross restore by ${impl}: rev ${rev - 1} -> ${rev}, quarantined ${cut.length} bytes, ${doc.items.length} items intact`)
+    console.log(`corrupt-cross ${writer} wrote, ${impl} restored: rev ${rev - 1} -> ${rev}, quarantined ${cut.length} bytes, ${doc.items.length} items intact`)
   }
 
   const q = quarantined(home)

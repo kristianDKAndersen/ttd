@@ -57,6 +57,7 @@
     "quarantined": 0,
     "lockDir": false,
     "tmpFiles": 0,
-    "bakExists": false
+    "bakExists": true,
+    "bakEqualsFile": true
   }
 }

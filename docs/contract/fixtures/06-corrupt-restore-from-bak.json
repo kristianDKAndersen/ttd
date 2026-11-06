@@ -1,14 +1,14 @@
 {
   "fixture": 1,
   "name": "06-corrupt-restore-from-bak",
-  "description": "The file does not parse. A writer quarantines it as todos.corrupt-<ts>-<token>.json (content byte-identical), restores the valid .bak as the base with rev = max(bak.rev, rev scraped from the corrupt text via /\"rev\"\\s*:\\s*(\\d+)/) = 7, applies the op and commits rev 8. Warnings are reported, never silent.",
+  "description": "The file does not parse. .bak is a byte-identical copy of the latest successfully committed todos.json (here rev 7, the same rev the torn text still shows), so restoring it loses no acknowledged write. A writer quarantines the corrupt file as todos.corrupt-<ts>-<token>.json (content byte-identical), takes the valid .bak as the base with rev = max(bak.rev, rev scraped from the corrupt text via /\"rev\"\\s*:\\s*(\\d+)/) = 7, applies the op and commits rev 8; the .bak is then rewritten to equal the new todos.json. Warnings are reported, never silent.",
   "setup": {
     "file": {
       "raw": "{\"schemaVersion\":1,\"rev\":7,\"items\":[{\"id\":\"t1\",\"title\":\"half writ"
     },
     "bak": {
       "schemaVersion": 1,
-      "rev": 6,
+      "rev": 7,
       "items": [
         {
           "id": "t1",
@@ -102,6 +102,7 @@
     ],
     "lockDir": false,
     "tmpFiles": 0,
-    "bakExists": true
+    "bakExists": true,
+    "bakEqualsFile": true
   }
 }

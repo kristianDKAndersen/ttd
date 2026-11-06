@@ -18,8 +18,8 @@ const asText = (v: unknown): string => (isRaw(v) ? v.raw : JSON.stringify(v, nul
 
 const names = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith(".json")).sort()
 
-test("all 13 fixtures are present", () => {
-  expect(names.length).toBe(13)
+test("all 14 fixtures are present", () => {
+  expect(names.length).toBe(14)
 })
 
 for (const name of names) {
@@ -74,6 +74,7 @@ for (const name of names) {
     else if (isRaw(fin.file)) expect(readFileSync(todos, "utf8")).toBe(fin.file.raw)
     else expect(JSON.parse(readFileSync(todos, "utf8"))).toEqual(fin.file)
     if ("bakExists" in fin) expect(existsSync(todos + ".bak"), "bakExists").toBe(fin.bakExists)
+    if (fin.bakEqualsFile) expect(readFileSync(todos + ".bak", "utf8"), "bakEqualsFile").toBe(readFileSync(todos, "utf8"))
     const quarantined = files.filter((f) => /^todos\.corrupt-.*\.json$/.test(f))
     expect(quarantined.length, "quarantined").toBe(fin.quarantined)
     if (fin.quarantinedRaw) {

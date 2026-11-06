@@ -26,9 +26,19 @@ export function excerpt(body: string, max = BODY_EXCERPT): string {
   return cut(body.replace(/[\s\u2028\u2029]+/g, ' ').trim(), max)
 }
 
+/** Plain-words account of a recovery, from the store's warning codes; undefined when nothing was recovered. */
+export function recoveryNote(warnings: readonly string[] | undefined): string | undefined {
+  const restored = warnings?.includes('restored_from_bak')
+  if (!restored && !warnings?.includes('corrupt_quarantined')) return undefined
+  const what = restored ? 'it was restored from its backup' : 'a new empty list was started'
+  return `todos.json was damaged; ${what}. The damaged copy is kept next to it as todos.corrupt-*.json. Tell the user.`
+}
+
 export interface RenderOpts {
   /** shown in the block header; the todos file's path */
   file: string
+  /** the store's warning codes; a recovery adds one Notice line under the intro */
+  warnings?: readonly string[]
   maxChars?: number
   maxItems?: number
   /** list done items one by one (the `list` tool) instead of collapsing them to a count */
@@ -60,7 +70,9 @@ export function renderContext(doc: Doc, o: RenderOpts): string {
   }
 
   const note = (n: number): string => `... ${n} more items not shown`
-  const fixed = head.length + INTRO.length + CLOSE.length + 3 // newlines around the body
+  const rec = recoveryNote(o.warnings)
+  const noteLine = rec === undefined ? undefined : `Notice: ${rec}`
+  const fixed = head.length + INTRO.length + CLOSE.length + 3 + (noteLine === undefined ? 0 : noteLine.length + 1) // newlines around the body
   const reserved = note(itemLines.length).length + 1 + collapsed.reduce((n, l) => n + l.length + 1, 0) + '(no todos)'.length + 1
   let budget = maxChars - fixed - reserved
 
@@ -74,7 +86,7 @@ export function renderContext(doc: Doc, o: RenderOpts): string {
   if (shown.length < itemLines.length) body.push(note(itemLines.length - shown.length))
   body.push(...collapsed)
   if (doc.items.length === 0) body.push('(no todos)')
-  return [head, INTRO, ...body, CLOSE].join('\n')
+  return [head, INTRO, ...(noteLine === undefined ? [] : [noteLine]), ...body, CLOSE].join('\n')
 }
 
 /** Short stable digest of the exact text the model was shown (FNV-1a over UTF-16 units, plus the length). */

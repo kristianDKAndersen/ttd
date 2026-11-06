@@ -1,6 +1,6 @@
 // The agent surface: six mcp__ttd__* tools and the /ttd command, both thin layers over the shared store core.
 import type { ToolSpec } from 'claude-code'
-import { excerpt, markSeen, renderContext } from './context.ts'
+import { escapeText, excerpt, markSeen, recoveryNote, renderContext } from './context.ts'
 import { openStore } from './mod-io.ts'
 import type { ModHost, Opened } from './mod-io.ts'
 import type { ApplyResult, Doc, Op } from './store/index.ts'
@@ -137,14 +137,20 @@ export async function runTool($: Host, name: ToolName, input: Record<string, unk
     const r = await o.store.read()
     if (!r.ok) return failurePayload(r)
     await noteSeen($, r.doc, o.file)
-    return { ok: true, rev: r.doc.rev, todos: renderContext(r.doc, { file: o.file, maxChars: LIST_MAX_CHARS, maxItems: LIST_MAX_ITEMS, listDone: true }) }
+    const lp: Record<string, unknown> = { ok: true, rev: r.doc.rev }
+    const lnote = recoveryNote(r.warnings)
+    if (lnote !== undefined) lp.notice = lnote
+    lp.todos = renderContext(r.doc, { file: o.file, maxChars: LIST_MAX_CHARS, maxItems: LIST_MAX_ITEMS, listDone: true, warnings: r.warnings })
+    return lp
   }
   const r = await o.store.apply(toolOp(name, input) as Op)
   if (!r.ok) return failurePayload(r)
   await noteSeen($, r.doc, o.file)
   const p: Record<string, unknown> = { ok: true, changed: r.changed, rev: r.rev, result: r.result }
   if (r.warnings.length > 0) p.warnings = r.warnings
-  p.todos = renderContext(r.doc, { file: o.file })
+  const note = recoveryNote(r.warnings)
+  if (note !== undefined) p.notice = note
+  p.todos = renderContext(r.doc, { file: o.file, warnings: r.warnings })
   return p
 }
 
@@ -180,18 +186,27 @@ const plainList = (doc: Doc): string => {
   const rows = [...doc.items.filter((i) => i.status !== 'done'), ...doc.items.filter((i) => i.status === 'done')].slice(0, LIST_MAX_ITEMS)
   const lines = rows.map((it) => {
     const b = excerpt(it.body)
-    return `[${it.status}] ${it.id} ${excerpt(it.title, 200)}${b ? ` - ${b}` : ''}`
+    return `[${it.status}] ${it.id} ${escapeText(excerpt(it.title, 200))}${b ? ` - ${escapeText(b)}` : ''}`
   })
   if (doc.items.length > rows.length) lines.push(`... ${doc.items.length - rows.length} more not shown`)
   return `rev ${doc.rev}, ${doc.items.length} todo${doc.items.length === 1 ? '' : 's'}\n${lines.join('\n')}`
 }
 
+/** JSON with `<` and `>` written as < and >: parses to the same value, and cannot close a wrapper tag. */
+const jsonSafe = (v: unknown): string => JSON.stringify(v).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e')
+
+// Everything /ttd echoes back (titles, ids, store messages, the user's own argument) goes through escapeText: the host may
+// wrap command output in a tag, and a title must not be able to close it.
 const errText = (f: { error: string; message?: string }): CommandOut => {
   const hint = HINTS[f.error]
-  return { text: `error: ${f.error}${f.message ? `: ${f.message}` : ''}${hint ? `\n${hint}` : ''}`, exitCode: 1 }
+  return { text: escapeText(`error: ${f.error}${f.message ? `: ${f.message}` : ''}${hint ? `\n${hint}` : ''}`), exitCode: 1 }
 }
-const usage = (why: string): CommandOut => ({ text: `${why}\n${HELP}`, exitCode: 2 })
-const warn = (r: { warnings: string[] }): string => (r.warnings.length ? `\nwarnings: ${r.warnings.join(', ')}` : '')
+const usage = (why: string): CommandOut => ({ text: `${escapeText(why)}\n${HELP}`, exitCode: 2 })
+const warn = (r: { warnings: string[] }): string => {
+  if (r.warnings.length === 0) return ''
+  const note = recoveryNote(r.warnings)
+  return `\nwarnings: ${r.warnings.join(', ')}${note ? `\n${note}` : ''}`
+}
 
 async function applyHuman($: Host, op: Op, o: Opened & { ok: true }, done: (r: Extract<ApplyResult, { ok: true }>) => string): Promise<CommandOut> {
   const r = await o.store.apply(op)
@@ -220,27 +235,27 @@ export async function runCommand($: Host, args: string): Promise<CommandOut> {
         op = JSON.parse(rest)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        return { text: JSON.stringify({ ok: false, error: 'invalid_op', message: `op is not valid JSON: ${msg}` }), exitCode: 1 }
+        return { text: jsonSafe({ ok: false, error: 'invalid_op', message: `op is not valid JSON: ${msg}` }), exitCode: 1 }
       }
       const r = await o.store.apply(op as Op)
-      return { text: JSON.stringify(r), exitCode: r.ok ? 0 : 1 }
+      return { text: jsonSafe(r), exitCode: r.ok ? 0 : 1 }
     }
     case 'add':
       if (rest === '') return usage('add needs a title')
       return applyHuman($, { op: 'add', title: rest }, o, (r) => {
         const it = (r.result as { item: { id: string; title: string } }).item
-        return `added ${it.id}: ${it.title} (rev ${r.rev})`
+        return `added ${escapeText(it.id)}: ${escapeText(it.title)} (rev ${r.rev})`
       })
     case 'start':
     case 'todo':
     case 'done': {
       if (rest === '') return usage(`${sub} needs an id`)
       const status = sub === 'start' ? 'in_progress' : sub
-      return applyHuman($, { op: 'set_status', id: rest, status }, o, (r) => (r.changed ? `${rest} is now ${status} (rev ${r.rev})` : `${rest} is already ${status}`))
+      return applyHuman($, { op: 'set_status', id: rest, status }, o, (r) => (r.changed ? `${escapeText(rest)} is now ${status} (rev ${r.rev})` : `${escapeText(rest)} is already ${status}`))
     }
     case 'rm':
       if (rest === '') return usage('rm needs an id')
-      return applyHuman($, { op: 'delete', id: rest }, o, (r) => (r.changed ? `deleted ${rest} (rev ${r.rev})` : `nothing to delete: ${rest} not found`))
+      return applyHuman($, { op: 'delete', id: rest }, o, (r) => (r.changed ? `deleted ${escapeText(rest)} (rev ${r.rev})` : `nothing to delete: ${escapeText(rest)} not found`))
     default:
       return applyHuman($, { op: 'reset_corrupt' }, o, (r) => `recovered (rev ${r.rev})`)
   }

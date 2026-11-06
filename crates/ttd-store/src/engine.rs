@@ -309,7 +309,7 @@ impl Store {
                 }
             };
             doc.rev = doc.rev.saturating_add(1);
-            let commit = Commit { doc: &doc, expected: Expected::Bytes(raw.clone()), bak: None, quarantine: Some(raw) };
+            let commit = Commit { doc: &doc, expected: Expected::Bytes(raw.clone()), quarantine: Some(raw) };
             return Ok(match self.commit(commit, ctx)? {
                 true => Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: json!({}), warnings, attempts: attempt, doc })),
                 false => Attempt::Conflict,
@@ -317,13 +317,13 @@ impl Store {
         }
 
         // Base document, what the file must still be at the CAS step, and whether this is a restore.
-        let (base, expected, bak_raw, restore_raw) = match state {
-            State::Absent => (Doc::empty(), Expected::Absent, None, None),
-            State::Valid { raw, doc } => (doc, Expected::Bytes(raw.clone()), Some(raw), None),
+        let (base, expected, restore_raw) = match state {
+            State::Absent => (Doc::empty(), Expected::Absent, None),
+            State::Valid { raw, doc } => (doc, Expected::Bytes(raw), None),
             State::Corrupt { raw } => {
                 let Some(mut bak) = self.read_bak() else { return Err(StoreError::new(ErrorCode::CorruptNoBackup)) };
                 bak.rev = bak.rev.max(scrape_rev(&raw));
-                (bak, Expected::Bytes(raw.clone()), None, Some(raw))
+                (bak, Expected::Bytes(raw.clone()), Some(raw))
             }
         };
         let restoring = restore_raw.is_some();
@@ -340,19 +340,23 @@ impl Store {
             warnings.push(Warning::CorruptQuarantined);
             warnings.push(Warning::RestoredFromBak);
         }
-        let commit = Commit { doc: &doc, expected, bak: bak_raw, quarantine: restore_raw };
+        let commit = Commit { doc: &doc, expected, quarantine: restore_raw };
         Ok(match self.commit(commit, ctx)? {
             true => Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: applied.result, warnings, attempts: attempt, doc })),
             false => Attempt::Conflict,
         })
     }
 
-    /// tmp -> seam -> CAS -> (quarantine) -> bak -> rename. `Ok(false)` = CAS conflict, tmp removed.
+    /// tmp + bak tmp -> seam -> CAS -> (quarantine link) -> rename tmp over todos.json -> rename bak tmp over .bak
+    /// (STORE.md sections 4 and 8). `Ok(false)` = CAS conflict, temp files removed.
     fn commit(&self, c: Commit<'_>, ctx: &mut ApplyCtx) -> Result<bool, StoreError> {
         let text = c.doc.to_json_pretty();
         let todos = self.todos_path();
+        // Both files are complete before anything visible changes, so a write failure aborts the op uncommitted.
         let mut tmp = TempFile::new(self.home.join(format!(".todos.json.tmp-{}", token())));
         write_file_synced(&tmp.path, text.as_bytes()).map_err(|e| StoreError::io("write temp file", &e))?;
+        let mut bak_tmp = TempFile::new(self.home.join(format!(".todos.json.tmp-{}", token())));
+        write_file_synced(&bak_tmp.path, text.as_bytes()).map_err(|e| StoreError::io("write backup", &e))?;
 
         if let Some(f) = ctx.before_commit.as_mut() {
             f();
@@ -368,7 +372,8 @@ impl Store {
             return Ok(false);
         }
 
-        // Quarantine by hard link (byte-identical, and todos.json is never absent); copy as fallback.
+        // Quarantine by hard link (byte-identical); copy as fallback. todos.json is only ever replaced by the rename
+        // below, so it is never absent.
         let mut quarantine = None;
         if c.quarantine.is_some() {
             let q = QuarantineFile::new(self.home.join(format!("todos.corrupt-{}-{}.json", wall_clock_compact(), token())));
@@ -378,17 +383,15 @@ impl Store {
             quarantine = Some(q);
         }
 
-        if let Some(raw) = &c.bak {
-            let mut bak_tmp = TempFile::new(self.home.join(format!(".todos.json.tmp-{}", token())));
-            fs::write(&bak_tmp.path, raw).map_err(|e| StoreError::io("write backup", &e))?;
-            self.rename_retrying(&bak_tmp.path, &self.home.join(BAK))?;
-            bak_tmp.disarm();
-        }
-
         self.rename_retrying(&tmp.path, &todos)?;
         tmp.disarm();
         if let Some(q) = quarantine.as_mut() {
             q.disarm();
+        }
+        // .bak = the commit just made, swapped in atomically. Failing here (or a crash) leaves the previous .bak, one
+        // version behind; the commit is already durable and acknowledged.
+        if self.rename_retrying(&bak_tmp.path, &self.home.join(BAK)).is_ok() {
+            bak_tmp.disarm();
         }
         sync_dir(&self.home);
         Ok(true)
@@ -530,8 +533,6 @@ impl Store {
 struct Commit<'a> {
     doc: &'a Doc,
     expected: Expected,
-    /// Bytes of the valid file being replaced, written to `todos.json.bak` before the rename.
-    bak: Option<Vec<u8>>,
     /// Bytes of the corrupt file to quarantine (hard-linked, so byte-identical).
     quarantine: Option<Vec<u8>>,
 }

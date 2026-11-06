@@ -1,5 +1,5 @@
 // Node/bun implementation of the store IO (STORE.md section 10). The Claude Code mod has its own (mod-io.ts).
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import type { IO } from "../plugin/hooks/store/index.ts"
 
@@ -49,6 +49,22 @@ export function createNodeIO(opts: NodeIOOptions = {}): IO {
           if (!RETRYABLE.has(codeOf(e) ?? "") || attempt >= retries) throw e
           await sleep(delay)
         }
+      }
+    },
+    async copyFile(from, to) {
+      // A hard link is atomic and byte-exact; where the filesystem refuses one, copy under a temp name and rename.
+      try {
+        return await link(from, to)
+      } catch (e) {
+        if (codeOf(e) === "ENOENT" || codeOf(e) === "EEXIST") throw e
+      }
+      const part = to + ".part"
+      try {
+        await copyFile(from, part)
+        await rawRename(part, to)
+      } catch (e) {
+        await rm(part, { force: true })
+        throw e
       }
     },
     async mkdirExclusive(p) {

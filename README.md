@@ -2,14 +2,15 @@
 
 TTD is a tiny todo list that lives in a floating, always-on-top window next to Claude Code, and that the
 agent can read and update too. You and the agent share one local file (`~/.ttd/todos.json`), so a todo you
-add in the window is visible to Claude and the other way round. Writes are atomic and conflict-safe, because
+add in the window is visible to Claude and the other way round. Writes are atomic and conflict-safe (lock, revision check, retry), because
 losing an item is the one thing this tool exists to prevent. Click a todo to expand it (body, trash, play =
 in progress, check = done), drag to reorder; grey = not started, blue = in progress, green = done.
 
 ![TTD mockup](docs/mockup.png)
 
-Status: beta, v0.1.0. The pieces are a Claude Code plugin (the "mod"), a Tauri v2 window, and a shared
-store implemented in TypeScript and Rust. Design and decisions: `docs/DECISIONS.md`, `docs/plan/plan.md`.
+Status: beta, v0.1.0. The pieces are a Claude Code plugin (the "mod", `plugin/`), a Tauri v2 window
+(`app/`), and a shared store implemented in TypeScript (`plugin/hooks/store/`) and Rust (`crates/ttd-store`),
+specified in `docs/contract/STORE.md`. Design and decisions: `docs/DECISIONS.md`, `docs/plan/plan.md`.
 Anything marked "unverified" below has not been exercised yet.
 
 ## 1. Install the plugin
@@ -53,14 +54,20 @@ Or open https://github.com/kristianDKAndersen/ttd/releases/latest in a browser w
 release workflow builds a macOS universal app, a Windows build and a Linux build. Exact asset names depend on
 the Tauri bundle targets (unverified: the workflow has never run).
 
-**Build from source.** Needs [bun](https://bun.sh) and a Rust toolchain; on Linux also
-`libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils`.
+**Build from source.** Needs [bun](https://bun.sh) and a Rust toolchain; on Linux also the
+[Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) (Debian/Ubuntu:
+`libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`).
 
 ```
 bun install
-bun run build:ui
-bun run tauri build
+CI=true bun run tauri build
 ```
+
+`tauri build` builds the UI itself. On macOS the app lands in `target/release/bundle/macos/TTD.app` (and a
+`.dmg` under `target/release/bundle/dmg/`); `CI=true` skips the Finder automation that the dmg step otherwise
+needs a logged-in GUI session for. Other platforms: `target/release/bundle/`, binary `target/release/ttd`.
+Only a `tauri build` binary embeds the UI: a plain `cargo build` binary loads the Vite dev URL and shows a blank
+window, so `/ttd` never launches `target/debug` (see Use it).
 
 ### Unsigned binaries: first launch
 
@@ -71,21 +78,34 @@ The builds are not code-signed or notarised, so each OS warns once.
 - **Windows** (SmartScreen): "More info" then "Run anyway".
 - **Linux** (AppImage): `chmod +x TTD*.AppImage`, then run it. A `.deb` puts `ttd` on the PATH.
 
-Run the window once: it records its own path in `~/.ttd/app.json`, which is how `/ttd` finds it later.
+Run the window once: it records its own path in `~/.ttd/app.json`, which is how `/ttd` finds it later
+(a path under `target/debug/` is ignored there).
 
 ## 3. Use it
 
 - `/ttd` in Claude Code launches the window; a second launch focuses the existing one. If no window is
-  installed it prints the install steps and the release link. `TTD_NO_LAUNCH=1` skips launching, and
-  `TTD_BIN=<path>` points at a specific binary.
-- Sub-commands (planned, check `plugin/README.md` for the final list): `/ttd list`, `add <title>`,
-  `start|todo|done|rm <id>`, `recover`, `path`.
-- The agent gets six tools: `mcp__ttd__list`, `add`, `update`, `set_status`, `reorder`, `delete`. Items are
-  addressed by `id`. Claude sees your window edits at its next prompt (a short `<ttd-todos>` block is attached
-  only when the list changed since it last looked) or in the result of its next ttd tool call.
-- Data lives in `~/.ttd/todos.json` (plus `todos.json.bak` and a lock directory). Set `TTD_HOME` to use another
-  directory. If the file is corrupt, writes are refused until it is recovered from `todos.json.bak`; corrupt
-  files are quarantined, not overwritten.
+  installed it prints the install steps and the release link.
+- Sub-commands: `/ttd list`, `add <title>`, `start|todo|done <id>`, `rm <id>`, `recover`, `path`, and
+  `op '<json>'` (one store op, prints the envelope; the machine path used by the tests). Details:
+  `plugin/README.md`.
+- The agent gets six tools: `mcp__ttd__list`, `mcp__ttd__add`, `mcp__ttd__update`, `mcp__ttd__set_status`,
+  `mcp__ttd__reorder`, `mcp__ttd__delete`. Items are addressed by `id`. Claude sees your window edits at its
+  next prompt (a short `<ttd-todos>` block is attached only when the list changed since it last looked) or in
+  the result of its next ttd tool call.
+- Environment: `TTD_HOME` (store directory, default `~/.ttd`), `TTD_BIN` (path of the window executable),
+  `TTD_NO_LAUNCH=1` (`/ttd` only reports what it would start), `TTD_APP_DIRS` (macOS: folders searched for
+  `TTD.app`), `TTD_LOCK_TIMEOUT_MS` / `TTD_LOCK_STALE_MS` (lock wait and stale-lock age). `/ttd` looks for the
+  window in this order: `TTD_BIN`, the `app.json` path, the OS install location, then (under `--plugin-dir`
+  in a checkout) the `tauri build` output: `target/release/bundle/macos/TTD.app` on macOS, `target/release/ttd`
+  elsewhere.
+- Data lives in `~/.ttd/todos.json`, plus `todos.json.bak` (a copy of the latest committed file, written
+  atomically after each commit) and a lock directory.
+- If `todos.json` is damaged, the damaged bytes are never overwritten: they are kept as
+  `todos.corrupt-<time>-<token>.json`. With a valid `.bak`, the next write (or the window's **Recover**
+  button, `/ttd recover`) restores it, which loses nothing TTD wrote. Whoever triggered the restore is told
+  (warnings `corrupt_quarantined`, `restored_from_bak`): the window shows a notice, the agent gets it in the
+  tool result and `/ttd` prints it. With no valid `.bak`, writes are refused (`corrupt_no_backup`)
+  until Recover, which starts an empty list.
 
 ## Limits
 
@@ -97,7 +117,7 @@ Run the window once: it records its own path in `~/.ttd/app.json`, which is how 
 - The model choosing `mcp__ttd__*` tools on its own is not covered by automated tests; engine-level tests and
   real-file `/ttd op` tests cover the same handlers. Manual check: run `claude --plugin-dir plugin`, ask
   "add a todo to fix login", watch the window update.
-- Deleting a todo in the window is immediate (no undo); `.bak` holds only the previous state.
+- Deleting a todo in the window is immediate (no undo); `.bak` is a copy of the current file, not a history.
 - Binaries are unsigned (above). The mod API is early access and the plugin was validated against Claude Code
   build 2.1.318 only.
 - There is no MCP server yet, so Claude Desktop chat users cannot use TTD in the beta.
@@ -114,15 +134,25 @@ becomes practical. While private, collaborator access is required for both the p
 bun install
 bun run shim        # store-backed dev server on 127.0.0.1; TTD_HOME selects the file (default ~/.ttd)
 bun run dev:ui      # Vite UI, /api proxied to the shim
-bun run verify      # typecheck, TS tests, UI build, browser e2e, Rust tests, plugin tests, app smoke, integration
+bun run verify      # typecheck, store and UI tests, UI build, browser e2e, Rust tests, plugin tests, app smoke, integration
 ```
 
-`bun run verify` needs Chrome (browser e2e), Rust, the `claude` CLI and a GUI session (app smoke). Smaller
-pieces: `bun run test:store`, `bun run test:ui`, `bun run test:rust`, `bun run typecheck`.
-`bun run tauri dev` runs the window against the Vite dev server.
+`bun run verify` needs Chrome (browser e2e), Rust, the `claude` CLI (its `test:mod` also runs `e2e-mod`, real
+`claude -p` sessions) and a GUI session (app smoke). `smoke:app` runs the debug binary
+(`bun run tauri build --debug --no-bundle` first) and **refuses to start while a TTD window is open**: quit
+TTD first, because single-instance would swallow the launch. Smaller pieces: `bun run test:store`,
+`test:ui`, `test:e2e-ui`, `test:rust`, `test:mod`, `test:integration` (cross-process: TS, Rust and mod
+writers, watchers, crash and corrupt recovery), `typecheck`. `bun run tauri dev` runs the window against the
+Vite dev server (its binary is a dev build and is not what `/ttd` launches).
 
-CI (`.github/workflows/ci.yml`) runs typecheck, the bun tests and `cargo test -p ttd-store` on Ubuntu.
-Releases: push a tag `v*` or run the `release` workflow manually; it creates a draft release with the bundles.
+CI (`.github/workflows/ci.yml`, Ubuntu) runs typecheck, the store and UI bun tests, the UI build,
+`claude plugin validate` and `claude plugin test` (CLI from npm, pinned to 2.1.318), `cargo test -p ttd-store`
+and `cargo test -p ttd` (with the Tauri Linux packages). Not in CI: browser e2e, app smoke, `e2e-mod`,
+integration, and type-checking of the five mod source files (excluded from `tsconfig.json`; the plugin tests
+cover them).
+Releases: push a tag `v*` or run the `release` workflow manually. It runs CI, checks that the versions in
+`tauri.conf.json`, `app/src-tauri/Cargo.toml`, `package.json` and `plugin.json` agree (and equal the tag),
+creates one draft release, then builds macOS, Windows and Linux into it. A maintainer publishes the draft.
 
 ## Next steps
 

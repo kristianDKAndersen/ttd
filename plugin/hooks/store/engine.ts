@@ -283,38 +283,48 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
       if (size > MAX_FILE_BYTES && size > (st.raw === null ? 0 : utf8Len(st.raw))) return fail("limit_exceeded")
 
       const tmp = joinPath(homeDir, ".todos.json.tmp-" + token)
+      const bakTmp = joinPath(homeDir, ".todos.json.tmp-" + randomToken(io.random))
       const quarantinePath = joinPath(homeDir, "todos.corrupt-" + compactTimestamp(now) + "-" + token + ".json")
       let committed = false
+      let bakInPlace = false
       try {
+        // Both files are complete before anything visible changes, so a write failure aborts the op uncommitted.
         await io.writeText(tmp, text)
+        await io.writeText(bakTmp, text)
         if (ctx.beforeCommit) await ctx.beforeCommit()
         // CAS: the file must be byte-for-byte what this attempt read (covers absent, corrupt and present alike).
         const cur = await io.readText(file)
-        if (cur !== st.raw) continue // finally removes the temp file; re-read and re-apply the same op
-        if (st.kind === "ok") await io.writeText(bakFile, st.raw)
-        let quarantined = false
-        if (quarantine) {
-          await io.rename(file, quarantinePath)
-          quarantined = true
-        }
+        if (cur !== st.raw) continue // finally removes the temp files; re-read and re-apply the same op
+        // Section 8: the corrupt file is copied byte-identical to its quarantine name; todos.json itself is only ever
+        // replaced by the rename below, so it is never absent.
+        if (quarantine) await io.copyFile(file, quarantinePath)
         try {
           await io.rename(tmp, file)
         } catch (e) {
-          if (quarantined) {
+          if (quarantine) {
             try {
-              await io.rename(quarantinePath, file) // put the unreadable file back rather than leave none
+              await io.removeTree(quarantinePath) // the corrupt file is still todos.json: drop the now-pointless copy
             } catch {
-              // the quarantined copy is still on disk
+              // a duplicate quarantine copy is harmless
             }
           }
           throw e
         }
         committed = true
+        // Section 4: .bak = the commit just made, swapped in atomically. Failing here (or a crash) leaves the previous
+        // .bak, one version behind; the commit is already durable and acknowledged.
+        try {
+          await io.rename(bakTmp, bakFile)
+          bakInPlace = true
+        } catch {
+          // best effort, see above
+        }
         return { ok: true, changed: true, rev: next.rev, result, warnings, attempts: attempt, doc: next }
       } finally {
-        if (!committed) {
+        for (const [path, gone] of [[tmp, committed], [bakTmp, bakInPlace]] as const) {
+          if (gone) continue
           try {
-            await io.removeTree(tmp)
+            await io.removeTree(path)
           } catch {
             // best effort
           }

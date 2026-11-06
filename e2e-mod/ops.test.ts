@@ -30,13 +30,13 @@ test("a) add -> todos.json is valid, rev 1, exit 0, no leftovers", async () => {
   expect(names).toContain("todos.json")
   expect(names).not.toContain("store.lock")
   expect(names.filter((n) => n.startsWith(".todos.json.tmp-"))).toEqual([])
-  expect(existsSync(join(home, "todos.json.bak"))).toBe(false) // first write: nothing to back up
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8")) // bak = the latest commit
 
   const again = await op(home, { op: "add", title: "Second" })
   expect(again.env.rev).toBe(2)
   expect(readTodos(home).items.map((i: any) => i.order)).toEqual([0, 1])
-  expect(existsSync(join(home, "todos.json.bak"))).toBe(true) // the previous state
-  expect(JSON.parse(readFileSync(join(home, "todos.json.bak"), "utf8")).rev).toBe(1)
+  expect(JSON.parse(readFileSync(join(home, "todos.json.bak"), "utf8")).rev).toBe(2) // the latest commit, not the previous one
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
 })
 
 test("b) fixtures 01 and 02 replayed through the mod give the contract results", async () => {

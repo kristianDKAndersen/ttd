@@ -1,7 +1,7 @@
 // Pure-function tests (no engine host needed): context rendering, argument parsing, tool-to-op mapping,
 // launcher resolution. Run by `claude plugin test plugin`.
 import { expect, test } from 'claude-code/testing'
-import { renderContext, digestOf, excerpt, escapeText } from './context.ts'
+import { renderContext, digestOf, excerpt, escapeText, recoveryNote } from './context.ts'
 import { TOOL_SPECS, TOOL_NAMES, toolOp, parseCommandArgs } from './tools.ts'
 import { resolveLauncher, installText, RELEASE_URL, launchArgvFor } from './launcher.ts'
 import type { Doc, Item } from './store/index.ts'
@@ -274,18 +274,14 @@ test('launcher Windows: LOCALAPPDATA then PROGRAMFILES, cmd start', async () => 
   expect(runs.some(r => r[0] === 'uname')).toBe(false)
 })
 
-test('launcher Linux: ttd on PATH, then the dev checkout', async () => {
+test('launcher Linux: ttd on PATH, then the release binary of the dev checkout', async () => {
   const a = await resolveLauncher(deps({ uname: 'Linux', onPath: '/usr/bin/ttd' }).d)
   expect(a?.via).toBe('path')
   expect(a?.argv).toEqual(['sh', '-c', NOHUP, 'sh', '/usr/bin/ttd'])
 
-  const dev = '/repo/plugin/../target/debug/ttd'
-  const b = await resolveLauncher(deps({ uname: 'Linux', root: '/repo/plugin', exists: [dev] }).d)
-  expect(b?.via).toBe('dev')
-  expect(b?.argv).toEqual(['sh', '-c', NOHUP, 'sh', dev])
-
   const rel = '/repo/plugin/../target/release/ttd'
   const c = await resolveLauncher(deps({ uname: 'Linux', root: '/repo/plugin', exists: [rel] }).d)
+  expect(c?.via).toBe('dev')
   expect(c?.argv).toEqual(['sh', '-c', NOHUP, 'sh', rel])
 
   const none = await resolveLauncher(deps({ uname: 'Linux', root: '/repo/plugin' }).d)
@@ -308,4 +304,61 @@ test('install text carries the release URL, the private-repo note and the unsign
   expect(t).toContain('xattr -dr com.apple.quarantine')
   expect(t).not.toContain('tauri dev')
   expect(installText({ isDevCheckout: true })).toContain('bun run tauri dev')
+})
+
+// ---- recovery note ----------------------------------------------------------------------------------------------
+
+test('recoveryNote: restored, quarantined only, and nothing for other warnings', () => {
+  expect(recoveryNote(['corrupt_quarantined', 'restored_from_bak'])).toContain('restored from its backup')
+  expect(recoveryNote(['restored_from_bak'])).toContain('restored from its backup')
+  expect(recoveryNote(['corrupt_quarantined'])).toContain('empty list')
+  expect(recoveryNote(['corrupt_quarantined'])).not.toContain('restored from its backup')
+  for (const n of [recoveryNote(['restored_from_bak']), recoveryNote(['corrupt_quarantined'])]) {
+    expect(n).toContain('todos.corrupt-*.json')
+    expect(n).toContain('Tell the user')
+  }
+  expect(recoveryNote(['stale_lock_broken'])).toBeUndefined()
+  expect(recoveryNote([])).toBeUndefined()
+  expect(recoveryNote(undefined)).toBeUndefined()
+})
+
+test('renderContext with warnings: one Notice line right after the intro, inside the block and the char cap', () => {
+  const plain = renderContext(docOf([item(0)]), { file: FILE })
+  expect(plain).not.toContain('Notice:')
+  const t = renderContext(docOf([item(0)]), { file: FILE, warnings: ['corrupt_quarantined', 'restored_from_bak'] })
+  const lines = t.split('\n')
+  expect(lines[2]).toMatch(/^Notice: todos\.json was damaged/)
+  expect(lines.length).toBe(plain.split('\n').length + 1)
+  expect(renderContext(docOf([item(0)]), { file: FILE, warnings: ['stale_lock_broken'] })).toBe(plain)
+  const many = docOf(Array.from({ length: 60 }, (_, n) => item(n, { title: 'x'.repeat(190) })))
+  expect(renderContext(many, { file: FILE, warnings: ['restored_from_bak'] }).length).toBeLessThanOrEqual(6000)
+})
+
+// ---- launcher: no dev binary that would load devUrl --------------------------------------------------------------
+
+test('launcher: a dev-run breadcrumb (target/debug) is skipped, a release one is used, TTD_BIN may name anything', async () => {
+  const dbg = '/repo/target/debug/ttd'
+  const bc = (p: string) => ({ '/home/u/.ttd/app.json': JSON.stringify({ path: p }) })
+  expect(await resolveLauncher(deps({ uname: 'Linux', files: bc(dbg), exists: [dbg] }).d)).toBeNull()
+  const dbgApp = '/repo/target/debug/bundle/macos/TTD.app/Contents/MacOS/ttd'
+  expect(await resolveLauncher(deps({ uname: 'Darwin', env: { TTD_APP_DIRS: '/none' }, files: bc(dbgApp), exists: [dbgApp] }).d)).toBeNull()
+  const win = 'C:\\repo\\target\\debug\\ttd.exe'
+  expect(await resolveLauncher(deps({ home: 'C:\\Users\\u\\.ttd', env: { USERPROFILE: 'C:\\Users\\u' }, files: { 'C:\\Users\\u\\.ttd\\app.json': JSON.stringify({ path: win }) }, exists: [win] }).d)).toBeNull()
+  const rel = '/repo/target/release/ttd'
+  expect((await resolveLauncher(deps({ uname: 'Linux', files: bc(rel), exists: [rel] }).d))?.via).toBe('breadcrumb')
+  expect((await resolveLauncher(deps({ uname: 'Linux', env: { TTD_BIN: dbg }, exists: [dbg] }).d))?.via).toBe('TTD_BIN')
+})
+
+test('launcher dev checkout: the tauri-build release bundle on macOS, the release binary elsewhere, never target/debug', async () => {
+  const root = '/repo/plugin'
+  const bundle = '/repo/plugin/../target/release/bundle/macos/TTD.app'
+  const mac = await resolveLauncher(deps({ uname: 'Darwin', root, env: { TTD_APP_DIRS: '/none' }, exists: [bundle] }).d)
+  expect(mac?.via).toBe('dev')
+  expect(mac?.argv).toEqual(['open', bundle])
+  // a plain `cargo build --release` binary loads devUrl on macOS too: only the bundle counts there
+  const plainMac = await resolveLauncher(deps({ uname: 'Darwin', root, env: { TTD_APP_DIRS: '/none' }, exists: ['/repo/plugin/../target/release/ttd'] }).d)
+  expect(plainMac).toBeNull()
+  const dbg = '/repo/plugin/../target/debug/ttd'
+  expect(await resolveLauncher(deps({ uname: 'Linux', root, exists: [dbg] }).d)).toBeNull()
+  expect(await resolveLauncher(deps({ uname: 'Darwin', root, env: { TTD_APP_DIRS: '/none' }, exists: [dbg, '/repo/plugin/../target/debug/bundle/macos/TTD.app'] }).d)).toBeNull()
 })

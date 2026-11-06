@@ -15,6 +15,14 @@ export type ModHost = {
   clock: { sleep(ms: number): Promise<void> }
 }
 
+// `mv` moves INTO an existing directory instead of failing, which would bury a live lock directory (STORE.md section 12):
+// refuse a directory destination up front. The test and the mv are one process, so the window is microseconds.
+const MV_REFUSING_DIRS = 'if [ -d "$2" ]; then echo "rename: destination is a directory: $2" >&2; exit 75; fi; exec mv -f -- "$1" "$2"'
+// Hard link when the filesystem allows (atomic, byte-exact), else copy under a temp name and move it into place.
+const CP_ATOMIC =
+  'if [ -e "$2" ]; then echo "copy: destination exists: $2" >&2; exit 75; fi; ln -- "$1" "$2" 2>/dev/null && exit 0; ' +
+  'cp -- "$1" "$2.part" && mv -f -- "$2.part" "$2" || { rm -f -- "$2.part"; exit 1; }'
+
 export const RENAME_RETRIES = 5
 export const RENAME_RETRY_MS = 20
 const PROCESS_TIMEOUT_MS = 10_000
@@ -65,7 +73,7 @@ export function createModIO($: ModHost, opts: { windows: boolean }): IO {
       await $.fs.write(p, t)
     },
     async rename(from, to) {
-      const argv = win ? ['cmd', '/c', 'move', '/Y', from, to] : ['mv', '-f', from, to]
+      const argv = win ? ['cmd', '/c', 'move', '/Y', from, to] : ['sh', '-c', MV_REFUSING_DIRS, 'sh', from, to]
       // POSIX rename does not fail transiently; Windows can have the target open in another process (section 4).
       const tries = win ? RENAME_RETRIES + 1 : 1
       let last = new Error('rename failed')
@@ -76,6 +84,10 @@ export function createModIO($: ModHost, opts: { windows: boolean }): IO {
         if (i + 1 < tries) await $.clock.sleep(RENAME_RETRY_MS)
       }
       throw last
+    },
+    async copyFile(from, to) {
+      const r = await sh(win ? ['cmd', '/c', 'copy', '/Y', '/B', from, to] : ['sh', '-c', CP_ATOMIC, 'sh', from, to])
+      if (r.exitCode !== 0) throw fail('copy', r)
     },
     async mkdirExclusive(p) {
       const r = await sh(win ? ['cmd', '/c', 'mkdir', p] : ['mkdir', p])

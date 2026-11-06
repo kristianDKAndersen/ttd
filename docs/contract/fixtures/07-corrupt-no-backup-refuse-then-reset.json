@@ -102,6 +102,7 @@
     ],
     "lockDir": false,
     "tmpFiles": 0,
-    "bakExists": true
+    "bakExists": true,
+    "bakEqualsFile": true
   }
 }

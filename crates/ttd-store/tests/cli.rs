@@ -284,7 +284,7 @@ fn lone_surrogates_in_op_text_are_refused_like_the_ts_core() {
     let ok = run(&h, &["apply", r#"{"op":"add","id":"t1","title":"smile \ud83d\ude00","junk":"\ud83d"}"#, "--now", NOW]);
     assert_eq!(ok.code, 0, "{}", ok.stdout);
     assert_eq!(ok.json()["result"]["item"]["title"], "smile \u{1f600}");
-    assert!(!h.join("todos.json.bak").exists());
+    assert_eq!(std::fs::read(h.join("todos.json.bak")).unwrap(), std::fs::read(h.join("todos.json")).unwrap(), "bak = the latest commit");
     // garbage is still invalid_op with a message
     let junk = run(&h, &["apply", "{nope", "--now", NOW]);
     assert_eq!(junk.json()["error"], "invalid_op");

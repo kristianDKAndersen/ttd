@@ -21,8 +21,8 @@ for prevention, a rev check for detection, ops (not file overwrites) so a retry 
 | Name | Purpose |
 |---|---|
 | `todos.json` | the store |
-| `todos.json.bak` | content of `todos.json` immediately before the last successful commit (last known good) |
-| `.todos.json.tmp-<token>` | per-writer temp file; `<token>` = 12 random `[a-z0-9]`; removed on every failure path; stale ones (> 1 h old) MAY be swept by a writer holding the lock |
+| `todos.json.bak` | byte-identical copy of the LATEST successfully committed `todos.json` (last known good; section 4) |
+| `.todos.json.tmp-<token>` | per-writer temp files (one for the new `todos.json`, one for the new `.bak`); `<token>` = 12 random `[a-z0-9]`; removed on every failure path; stale ones (> 1 h old) MAY be swept by a writer holding the lock |
 | `store.lock/` | lock directory (section 5); contains `owner.json` |
 | `todos.corrupt-<yyyymmddThhmmssZ>-<token>.json` | quarantined unparseable file, kept forever, byte-identical to what was found |
 | `app.json` | breadcrumb the window writes at start: `{"path": <abs exe path>, "version": "x.y.z", "writtenAt": <iso>}`; read by the mod's `/ttd` launcher; not part of the store protocol |
@@ -103,11 +103,31 @@ Warning codes: `corrupt_quarantined`, `restored_from_bak`, `stale_lock_broken`.
 
 Under the lock: write the full new content to `.todos.json.tmp-<token>` (same directory), then
 replace `todos.json` by rename. POSIX `rename(2)`; Windows `MoveFileExW(REPLACE_EXISTING)`. The mod
-cannot call either, so its IO adapter runs `mv -f tmp dst` (POSIX) or `cmd /c move /Y tmp dst`
-(Windows) through `$.process.run` and treats a non-zero exit as failure. Rename failures on
+cannot call either, so its IO adapter runs `mv -f tmp dst` behind a directory-destination check (POSIX, section 12)
+or `cmd /c move /Y tmp dst` (Windows) through `$.process.run` and treats a non-zero exit as failure. Rename failures on
 EPERM/EACCES/EBUSY (Windows, another process has the file open) are retried 5 times, 20 ms apart,
 before `io_error`. A reader can therefore never see a half-written `todos.json` from a conforming
 writer; a non-conforming writer or a crash mid-write is handled by section 8.
+
+**`.bak` rule.** The product promise is "never lose a todo", so `.bak` is not "the version before": it is a
+byte-identical copy of the latest commit. Under the same lock, the writer writes the new content to TWO temp files
+before anything visible changes (`.todos.json.tmp-<token>` for `todos.json`, a second token for `.bak`; a failure to
+write either aborts the op with nothing committed), then after the CAS:
+
+1. rename temp over `todos.json` (the commit point; acknowledged to the caller once the lock is released);
+2. rename the second temp over `todos.json.bak` (atomic, never a direct write, so a kill cannot leave a truncated
+   `.bak`).
+
+Consequences, all deliberate:
+
+- A crash between 1 and 2, or a failed rename in 2, leaves `.bak` ONE VERSION BEHIND `todos.json`. Nothing
+  acknowledged is at risk: the crashed writer never acknowledged its write (its caller got no result), and a later
+  successful commit catches `.bak` up. A failed step 2 does not fail the op (the commit stands); it is not reported
+  as a warning either.
+- Every commit writes `.bak`, including the first one, `reset_corrupt`, and a restore from `.bak` itself. A no-op
+  that does not write leaves both files alone.
+- Restoring from `.bak` after a clobbered `todos.json` therefore loses nothing a TTD writer acknowledged.
+- A `.bak` from an older build (the version before the last commit) is replaced by the next commit.
 
 ## 5. Concurrency protocol (every write op, every implementation)
 
@@ -117,11 +137,12 @@ acquire lock                                   (lockTimeoutMs = 5000, lockStaleM
      raw  = read todos.json ; doc = parse+validate      (absent => empty doc; corrupt => section 8)
      (doc', changed, result) = apply(doc, op, now)       (error => release, return error; no write)
      if !changed => release, return ok changed:false rev:doc.rev   (no write)
-     doc'.rev = doc.rev + 1 ; write tmp
+     doc'.rev = doc.rev + 1 ; write tmp and bak-tmp (same bytes)
      CAS: re-read todos.json, parse rev; if absent-vs-present or rev != doc.rev:
             remove tmp ; attempt++ ; continue          (re-read, RE-APPLY the same op)
-     write todos.json.bak = raw (if raw existed and was valid)
-     rename tmp -> todos.json
+     (corrupt: copy todos.json byte-identical to its quarantine name first, section 8)
+     rename tmp -> todos.json                            (commit)
+     rename bak-tmp -> todos.json.bak                    (bak = the commit just made; best effort, section 4)
      release, return ok changed:true rev:doc'.rev attempts:attempt
   attempts exhausted => release, return conflict_exhausted
 ```
@@ -156,7 +177,8 @@ surfaces as `io_error` if the directory really is missing).
                    judged token T:      its owner.json token == T
                    judged no token:     its owner.json is still unusable and its mtime is older than lockStaleMs
                 not the same (we took a live lock) => rename it back to store.lock; do NOT claim the break
-                   (if the name is taken again, remove the renamed copy)
+                   (if the name is taken again, remove the renamed copy: the IO `rename` MUST FAIL when the destination
+                    is a directory, never move the source INTO it, as plain `mv` does; section 12)
                 same => remove the renamed directory, warning stale_lock_broken
                 remove store.lock.break in every case, then retry mkdir of store.lock
   ```
@@ -205,15 +227,27 @@ an item missing a field or with a wrong type or an invalid `status`/`id`, or dup
 
 Writers (under the lock) that find `todos.json` corrupt:
 
-1. If `todos.json.bak` exists and is valid: rename the corrupt file, byte-identical, to
-   `todos.corrupt-<ts>-<token>.json` (warning `corrupt_quarantined`); base = the `.bak` doc with
-   `rev = max(bak.rev, rawRev)` where `rawRev` is scraped from the corrupt text with
-   `/"rev"\s*:\s*(\d+)/` (0 if none), so `rev` never repeats a value a live window may have shown;
-   apply the op; commit with `rev = base.rev + 1` (always write, even when the op was a no-op); the `.bak`
-   itself is left as found (never overwritten with corrupt content). Warning `restored_from_bak`.
+1. If `todos.json.bak` exists and is valid: base = the `.bak` doc with `rev = max(bak.rev, rawRev)` where `rawRev` is
+   scraped from the corrupt text with `/"rev"\s*:\s*(\d+)/` (0 if none), so `rev` never repeats a value a live
+   window may have shown; apply the op (a rejected op changes nothing, nothing is quarantined); commit with
+   `rev = base.rev + 1` (always write, even when the op was a no-op). Warnings `corrupt_quarantined` and
+   `restored_from_bak`. The commit is the ordinary sequence of section 4 with ONE extra step, and the order is
+   normative (TS and Rust identical):
+
+   1. write both temp files (new `todos.json`, new `.bak`), run the CAS against the corrupt bytes;
+   2. copy the corrupt `todos.json` byte-identical to `todos.corrupt-<ts>-<token>.json`, creating it atomically
+      (Rust: hard link, copy as fallback; TS: `IO.copyFile`, a hard link or copy-then-rename; never a partial file);
+   3. rename the temp over `todos.json`; if that fails, delete the quarantine copy (the corrupt file is still there);
+   4. rename the bak temp over `todos.json.bak`.
+
+   `todos.json` is never absent: it is replaced only by step 3, which swaps one existing file for another. A crash
+   after step 2 leaves the corrupt `todos.json` in place, a valid `.bak`, and one extra quarantine copy (duplicate
+   bytes, harmless; the next writer recovers again and makes its own). A crash after step 3 is the section 4
+   "`.bak` one version behind" case. `.bak` is never overwritten with corrupt content: its new content is the
+   restored commit.
 2. Otherwise refuse with `corrupt_no_backup`: `todos.json` stays exactly as found, nothing is written or
-   moved. The explicit op `reset_corrupt` (window banner button, `/ttd recover`) quarantines it and writes
-   `{rev: rawRev+1, items: []}`. Never write an empty list over a file that could not be parsed.
+   moved. The explicit op `reset_corrupt` (window banner button, `/ttd recover`) quarantines it (the same
+   steps as above) and writes `{rev: rawRev+1, items: []}`. Never write an empty list over a file that could not be parsed.
 
 `schemaVersion` greater than supported: `unsupported_version` on read and write; the file is not
 quarantined, not rewritten, not downgraded. Lower versions: migrate in memory, persist on the next effective
@@ -242,7 +276,8 @@ interface IO {                       // injected; node-io.ts for bun/node, mod-i
   now(): number; sleep(ms: number): Promise<void>; random(): number; pid(): number
   readText(p: string): Promise<string | null>          // null = ENOENT
   writeText(p: string, t: string): Promise<void>        // creates parent dirs
-  rename(from: string, to: string): Promise<void>       // atomic replace, retries per section 4
+  rename(from: string, to: string): Promise<void>       // atomic replace, retries per section 4; MUST fail, never nest, when `to` is a directory
+  copyFile(from: string, to: string): Promise<void>     // `to` (must not exist) = byte-identical copy of `from`, complete or absent
   mkdirExclusive(p: string): Promise<boolean>           // true created, false exists
   removeTree(p: string): Promise<void>                  // missing is fine
   mtimeMs(p: string): Promise<number | null>
@@ -273,7 +308,7 @@ randomness still come from `IO`/`ctx` so tests are deterministic. The Rust crate
                "seam"?: {"beforeCommit": {"replaceFile": <Doc>}},
                "expect": { "ok": true, "changed"?, "rev"?, "result"?, "warnings"?: [...], "attempts"?, "doc"? }
                         | { "ok": false, "error": code } } ],
-  "final": { "file": <Doc> | {"raw"} | "absent", "bakExists"?: bool,
+  "final": { "file": <Doc> | {"raw"} | "absent", "bakExists"?: bool, "bakEqualsFile"?: true,   // bytes of .bak == bytes of todos.json
              "quarantined": n, "quarantinedRaw"?: [string], "lockDir": bool, "tmpFiles": n } }
 ```
 
@@ -290,7 +325,7 @@ of `.todos.json.tmp-*`). Real files in a real temp dir; no mocked filesystem. In
 | 03 | idempotent add, delete-missing, same-value updates (no write), not_found, invalid_op |
 | 04 | validation and code-point limits (emoji), file untouched on error |
 | 05 | CONFLICT: rev changes between read and commit; retry re-applies; both changes survive; attempts=2 |
-| 06 | CORRUPT with valid .bak: quarantine, restore, rev jump, warnings |
+| 06 | CORRUPT with valid .bak: quarantine, restore, rev jump, warnings, .bak ends equal to the new file |
 | 07 | CORRUPT without .bak: refuse, file untouched, read=corrupt, reset_corrupt, not_corrupt |
 | 08 | unsupported schemaVersion: no write, no quarantine |
 | 09 | unknown fields preserved |
@@ -298,6 +333,7 @@ of `.todos.json.tmp-*`). Real files in a real temp dir; no mocked filesystem. In
 | 11 | live lock -> lock_timeout, foreign lock left alone |
 | 12 | read normalises order without writing |
 | 13 | read of an absent file |
+| 14 | CORRUPT after a status flip: the restore keeps the flip (the last acknowledged write), .bak ends equal to the new file |
 
 Real concurrency (many processes, mixed implementations) is not a fixture: it is the wave 3
 integration test in `docs/plan/plan.md`.
@@ -308,7 +344,8 @@ integration test in `docs/plan/plan.md`.
 |---|---|---|
 | `readText` | `$.fs.read` (reject ENOENT -> null) | same |
 | `writeText` | `$.fs.write` | same |
-| `rename` | `$.process.run(["mv","-f",a,b])` | `["cmd","/c","move","/Y",a,b]` |
+| `rename` | `$.process.run(["sh","-c",<script>,"sh",a,b])`; the script refuses (exit 75) when `b` is a directory, else `exec mv -f -- a b` | `["cmd","/c","move","/Y",a,b]` |
+| `copyFile` | `["sh","-c",<script>,"sh",a,b]`; refuses an existing `b`, tries `ln a b`, else `cp a b.part` + `mv -f` | `["cmd","/c","copy","/Y","/B",a,b]` |
 | `mkdirExclusive` | `["mkdir", p]` exit 0 / non-zero | `["cmd","/c","mkdir",p]` |
 | `removeTree` | `["rm","-rf",p]` | `["cmd","/c","rmdir","/s","/q",p]` |
 | `mtimeMs` | `$.fs.stat(p).mtimeMs` | same |
@@ -318,4 +355,4 @@ nouns), so Windows is detected from the resolved home path (`^[A-Za-z]:` or cont
 `$.env.get` takes literal names only, so the adapter reads `TTD_HOME`, `USERPROFILE`, `HOME` as three
 literal calls. Probe-verified on macOS (claude 2.1.318): `claude -p --plugin-dir <dir> "/cmd"` runs a
 registered command with real `$.fs` and `$.process`, sees the shell's env, `mkdir` is exclusive
-(second call exit 1), `mv -f` replaces, and `CommandRunResult.exitCode` becomes the process exit code.
+(second call exit 1), `mv -f` replaces files, and `CommandRunResult.exitCode` becomes the process exit code.

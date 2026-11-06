@@ -1,0 +1,108 @@
+{
+  "fixture": 1,
+  "name": "14-corrupt-restore-keeps-last-status-flip",
+  "description": "The last acknowledged write before the corruption was a status flip (t2 -> in_progress, rev 5). Because .bak is a copy of the LATEST commit, restoring from it keeps that flip: after quarantine and restore, t2 is still in_progress, t1 still done, the op adds t3 and commits rev 6. Nothing acknowledged is lost, and the .bak ends equal to the new todos.json.",
+  "setup": {
+    "file": {
+      "raw": "{\"schemaVersion\":1,\"rev\":5,\"items\":[{\"id\":\"t1\",\"title\":\"One\",\"body\":\"\",\"status\":\"done\",\"order\":0,\"createdAt\":\"2026-01-01T08:00:00.000Z\",\"updatedAt\":\"2026-01-01T08:00:00.000Z\"},{\"id\":\"t2\",\"title\":\"Two\",\"body\":\"\",\"status\":\"in_prog"
+    },
+    "bak": {
+      "schemaVersion": 1,
+      "rev": 5,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "done",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "in_progress",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T12:30:00.000Z"
+        }
+      ]
+    },
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T13:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t3",
+        "title": "Three"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 6,
+        "result": {
+          "item": {
+            "id": "t3",
+            "title": "Three",
+            "body": "",
+            "status": "todo",
+            "order": 2,
+            "createdAt": "2026-01-01T13:00:00.000Z",
+            "updatedAt": "2026-01-01T13:00:00.000Z"
+          }
+        },
+        "warnings": [
+          "corrupt_quarantined",
+          "restored_from_bak"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 6,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "done",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "in_progress",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T12:30:00.000Z"
+        },
+        {
+          "id": "t3",
+          "title": "Three",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T13:00:00.000Z",
+          "updatedAt": "2026-01-01T13:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 1,
+    "quarantinedRaw": [
+      "{\"schemaVersion\":1,\"rev\":5,\"items\":[{\"id\":\"t1\",\"title\":\"One\",\"body\":\"\",\"status\":\"done\",\"order\":0,\"createdAt\":\"2026-01-01T08:00:00.000Z\",\"updatedAt\":\"2026-01-01T08:00:00.000Z\"},{\"id\":\"t2\",\"title\":\"Two\",\"body\":\"\",\"status\":\"in_prog"
+    ],
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

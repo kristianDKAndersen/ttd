@@ -97,6 +97,7 @@ export interface IO {
   readText(p: string): Promise<string | null> // null = ENOENT
   writeText(p: string, t: string): Promise<void> // creates parent dirs
   rename(from: string, to: string): Promise<void> // atomic replace, retries per section 4
+  copyFile(from: string, to: string): Promise<void> // `to` (must not exist) becomes a byte-identical copy of `from`, complete or absent
   mkdirExclusive(p: string): Promise<boolean> // true created, false already exists; anything else throws
   removeTree(p: string): Promise<void> // missing is fine
   mtimeMs(p: string): Promise<number | null>

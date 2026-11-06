@@ -142,6 +142,9 @@ fn run(prefix: &str) {
     if let Some(b) = fin.get("bakExists").and_then(Value::as_bool) {
         assert_eq!(bak.exists(), b, "{file_name}: bakExists");
     }
+    if fin.get("bakEqualsFile").and_then(Value::as_bool) == Some(true) {
+        assert_eq!(fs::read(&bak).unwrap(), fs::read(&todos).unwrap(), "{file_name}: bakEqualsFile");
+    }
     let q = quarantined(&home);
     assert_eq!(q.len() as u64, fin["quarantined"].as_u64().unwrap(), "{file_name}: quarantined count");
     if let Some(raws) = fin.get("quarantinedRaw").and_then(Value::as_array) {
@@ -174,13 +177,14 @@ fixture_tests! {
     fixture_11_fresh_lock_times_out => "11",
     fixture_12_read_normalises_order => "12",
     fixture_13_read_absent_file => "13",
+    fixture_14_corrupt_restore_keeps_last_status_flip => "14",
 }
 
 #[test]
-fn all_thirteen_fixtures_are_wired() {
+fn all_fourteen_fixtures_are_wired() {
     let n = fs::read_dir(fixtures_dir())
         .unwrap()
         .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".json"))
         .count();
-    assert_eq!(n, 13, "a fixture was added: wire it into fixture_tests!");
+    assert_eq!(n, 14, "a fixture was added: wire it into fixture_tests!");
 }

@@ -7,8 +7,12 @@ import { cleanup, files, op, readTodos, replayFixture, runClaude, say, tmpDir } 
 setDefaultTimeout(180_000)
 afterAll(cleanup)
 
-test("d) corrupt file with a .bak: fixtures 06 and 07 paths through the mod (quarantine, restore, refuse, reset)", async () => {
-  await Promise.all([replayFixture("06-corrupt-restore-from-bak.json"), replayFixture("07-corrupt-no-backup-refuse-then-reset.json")])
+test("d) corrupt file with a .bak: fixtures 06, 07 and 14 paths through the mod (quarantine, restore, refuse, reset)", async () => {
+  await Promise.all([
+    replayFixture("06-corrupt-restore-from-bak.json"),
+    replayFixture("07-corrupt-no-backup-refuse-then-reset.json"),
+    replayFixture("14-corrupt-restore-keeps-last-status-flip.json"),
+  ])
 })
 
 test("d2) /ttd recover resets a corrupt file that has no .bak; the bytes are quarantined", async () => {

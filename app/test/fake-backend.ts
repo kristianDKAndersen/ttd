@@ -33,6 +33,8 @@ export class FakeBackend implements Backend {
   readError: { error: ErrorCode; message?: string } | null = null
   /** Next apply() resolves {ok:false,error}. */
   failNextApply: ErrorCode | null = null
+  /** Next successful apply() carries these warnings (like a recovery from todos.json.bak). */
+  nextWarnings: string[] | null = null
   /** Next apply() rejects (like a thrown invoke). */
   rejectNextApply: string | null = null
   /** When true apply() waits for release() before resolving. */
@@ -141,7 +143,9 @@ export class FakeBackend implements Backend {
     this.doc = makeDoc(items, this.doc.rev + (changed ? 1 : 0))
     const doc = structuredClone(this.doc)
     queueMicrotask(() => this.emit({ ok: true, doc: structuredClone(doc) }))
-    return { ok: true, changed, rev: doc.rev, result, doc }
+    const warnings = this.nextWarnings
+    this.nextWarnings = null
+    return { ok: true, changed, rev: doc.rev, result, doc, ...(warnings ? { warnings } : {}) }
   }
 }
 

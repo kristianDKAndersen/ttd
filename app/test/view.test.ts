@@ -619,3 +619,89 @@ describe('13 corrupt and unsupported banners', () => {
     expect($$('img', h.root)).toHaveLength(0)
   })
 })
+
+describe('14 recovery notices and the corrupt banner wording', () => {
+  const BOTH = ['corrupt_quarantined', 'restored_from_bak']
+  const addOne = async (title = 'new one') => {
+    await openForm()
+    typeInto($<HTMLInputElement>('.f-title'), title)
+    key($('.f-title'), 'Enter')
+    await flush()
+  }
+
+  test('an apply that restored from the backup shows a non-blocking notice and keeps working', async () => {
+    const h = await mountApp(five(), { configure: (f) => (f.nextWarnings = BOTH) })
+    await addOne()
+    const n = $('.notice')
+    expect(n.getAttribute('role')).toBe('status')
+    expect(n.textContent).toContain('todos.json was damaged')
+    expect(n.textContent).toContain('restored from backup')
+    expect(n.textContent).toContain('todos.corrupt-')
+    expect($$('.banner')).toHaveLength(0)
+    expect(h.rows()).toHaveLength(6)
+    expect(($('.add') as HTMLButtonElement).disabled).toBe(false)
+  })
+  test('quarantined without a restore says an empty list was started', async () => {
+    await mountApp(five(), { configure: (f) => (f.nextWarnings = ['corrupt_quarantined']) })
+    await addOne()
+    expect($('.notice').textContent).toContain('empty list')
+    expect($('.notice').textContent).not.toContain('restored from backup')
+    expect($('.notice').textContent).toContain('todos.corrupt-')
+  })
+  test('other warnings and no warnings show no notice', async () => {
+    await mountApp(five(), { configure: (f) => (f.nextWarnings = ['stale_lock_broken']) })
+    await addOne()
+    expect($$('.notice')).toHaveLength(0)
+    await addOne('again')
+    expect($$('.notice')).toHaveLength(0)
+  })
+  test('the notice stays through re-renders until dismissed, and dismiss only removes it', async () => {
+    const h = await mountApp(five(), { configure: (f) => (f.nextWarnings = BOTH) })
+    await addOne()
+    h.fake.external((items) => [...items, item('x')])
+    await flush()
+    expect($$('.notice')).toHaveLength(1)
+    click($('.notice .dismiss'))
+    await flush()
+    expect($$('.notice')).toHaveLength(0)
+    expect(h.rows()).toHaveLength(7)
+  })
+  test('a read result that carries the warnings shows the notice too, even when it is stale', async () => {
+    const h = await mountApp(five())
+    h.fake.emit({ ok: true, doc: { ...h.fake.doc, rev: 0 }, warnings: BOTH })
+    await flush()
+    expect($('.notice').textContent).toContain('restored from backup')
+    expect(h.rows()).toHaveLength(5)
+  })
+  test('recovering a corrupt file explains what happened', async () => {
+    await mountApp([], {
+      configure: (f) => {
+        f.readError = { error: 'corrupt' }
+        f.nextWarnings = BOTH
+      },
+    })
+    click($('.banner .reset'))
+    await flush()
+    expect($$('.banner')).toHaveLength(0)
+    expect($('.notice').textContent).toContain('restored from backup')
+  })
+  test('the corrupt banner says what the button does: restore the backup if valid, else start empty, damaged file kept', async () => {
+    await mountApp([], { configure: (f) => (f.readError = { error: 'corrupt' }) })
+    const text = $('.banner').textContent ?? ''
+    expect(text).toContain('damaged')
+    expect(text).toContain('backup')
+    expect(text).toContain('empty')
+    expect(text).toContain('kept')
+    const reset = $('.banner .reset')
+    expect(reset.textContent).toBe('Recover')
+    expect(reset.title).toContain('backup')
+    expect(reset.title).toContain('empty')
+    expect(reset.title).toContain('todos.corrupt-')
+    expect(`${text} ${reset.title}`).not.toMatch(/quarantine|fresh list|unreadable/i)
+  })
+  test('notice text is plain text', async () => {
+    const h = await mountApp(five(), { configure: (f) => (f.nextWarnings = BOTH) })
+    await addOne('<img src=x>')
+    expect($$('img', h.root)).toHaveLength(0)
+  })
+})

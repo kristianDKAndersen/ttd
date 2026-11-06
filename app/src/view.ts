@@ -101,6 +101,13 @@ interface Banner {
   message?: string
 }
 
+/** What a recovery did, from the store's warnings; undefined when nothing was recovered. */
+function recoveryNotice(warnings: readonly string[] | undefined): string | undefined {
+  if (!warnings?.includes('corrupt_quarantined') && !warnings?.includes('restored_from_bak')) return undefined
+  const what = warnings.includes('restored_from_bak') ? 'restored from backup' : 'started an empty list'
+  return `todos.json was damaged; ${what}. The damaged copy is kept next to it as todos.corrupt-*.json.`
+}
+
 interface DragCandidate {
   id: string
   pointerId: number
@@ -153,10 +160,11 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
     head.appendChild(closeBtn)
   }
   const bannerHost = el('div', 'banner-host')
+  const noticeHost = el('div', 'notice-host')
   const formHost = el('div', 'form-host')
   const list = el('ul', 'list')
   const emptyEl = el('li', 'empty', 'Nothing here yet. Press + to add a todo.')
-  panel.append(head, bannerHost, formHost, list)
+  panel.append(head, bannerHost, noticeHost, formHost, list)
   root.appendChild(panel)
 
   const readOnly = () => banner?.kind === 'unsupported_version'
@@ -175,10 +183,28 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
     }, toastMs)
   }
 
+  // ---- recovery notice (stays until dismissed; independent of banner and render)
+
+  function showNotice(text: string): void {
+    const n = el('div', 'notice')
+    n.setAttribute('role', 'status')
+    const t = el('span', 'notice-text', text)
+    const dismiss = el('button', 'dismiss', 'Dismiss')
+    dismiss.type = 'button'
+    n.append(t, dismiss)
+    noticeHost.replaceChildren(n)
+  }
+
+  noticeHost.addEventListener('click', (e) => {
+    if ((e.target as Element).closest('.dismiss')) noticeHost.replaceChildren()
+  })
+
   // ---- data flow
 
   function ingest(r: ReadResult, dropIfStale = false): void {
     if (destroyed) return
+    const notice = r.ok ? recoveryNotice(r.warnings) : undefined
+    if (notice) showNotice(notice)
     if (drag) {
       pending = r
       return
@@ -216,7 +242,7 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
     }
     if (destroyed) return res.ok
     if (res.ok) {
-      ingest({ ok: true, doc: res.doc }, true)
+      ingest({ ok: true, doc: res.doc, warnings: res.warnings }, true)
       return true
     }
     toast(`${op.op} failed (${res.error})${res.message ? `: ${res.message}` : ''}`)
@@ -248,11 +274,11 @@ export function mount(root: HTMLElement, backend: Backend, opts: MountOptions = 
     b.setAttribute('role', 'alert')
     const text = el('span', 'banner-text')
     if (banner.kind === 'corrupt') {
-      text.textContent = 'The todo file is unreadable.'
+      text.textContent = 'todos.json is damaged. Recover restores the backup, or starts an empty list if there is no valid one; the damaged file is kept.'
       b.appendChild(text)
-      const reset = el('button', 'reset', 'Reset')
+      const reset = el('button', 'reset', 'Recover')
       reset.type = 'button'
-      reset.title = 'Quarantine the broken file and start a fresh list'
+      reset.title = 'Restore the last backup if it is valid, otherwise start an empty list. The damaged file is kept as todos.corrupt-*.json.'
       b.appendChild(reset)
     } else if (banner.kind === 'unsupported_version') {
       text.textContent = 'This todo file comes from a newer TTD. Editing is disabled; please update the app.'

@@ -1,7 +1,7 @@
 // The ttd mod: six tools for the agent, changed-only list context on each prompt, and /ttd.
 // All logic lives in tools.ts, context.ts, launcher.ts and the shared store core (./store); this file only wires hooks.
 import type { Register } from 'claude-code'
-import { markSeen, readSeen, renderContext, digestOf, resetSeen } from './context.ts'
+import { markSeen, readSeen, recoveryNote, renderContext, digestOf, resetSeen } from './context.ts'
 import { openStore } from './mod-io.ts'
 import { TOOL_SPECS, runCommand, runTool } from './tools.ts'
 import type { ToolName } from './tools.ts'
@@ -38,8 +38,10 @@ export const register: Register = (on) => {
           const last = await readSeen($)
           const text = renderContext(r.doc, { file: o.file })
           const isUnseenEmpty = last === null && r.doc.items.length === 0
-          if (!isUnseenEmpty && (last === null || last.digest !== digestOf(text))) {
-            block = text
+          // A recovery notice rides along once; the digest is of the plain text so the next prompt is not a "change".
+          const recovered = recoveryNote(r.warnings) !== undefined
+          if (!isUnseenEmpty && (recovered || last === null || last.digest !== digestOf(text))) {
+            block = recovered ? renderContext(r.doc, { file: o.file, warnings: r.warnings }) : text
             seen = { doc: r.doc, text }
           }
         }

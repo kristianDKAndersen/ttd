@@ -156,6 +156,7 @@ export async function replayFixture(file: string, o: ReplayOpts = {}): Promise<v
   expect(existsSync(join(home, "store.lock")), `${file} lockDir`).toBe(fin.lockDir)
   expect(names.filter((n) => n.startsWith(".todos.json.tmp-")).length, `${file} tmpFiles`).toBe(fin.tmpFiles)
   if (fin.bakExists !== undefined) expect(existsSync(join(home, "todos.json.bak")), `${file} bakExists`).toBe(fin.bakExists)
+  if (fin.bakEqualsFile) expect(readFileSync(join(home, "todos.json.bak"), "utf8"), `${file} bakEqualsFile`).toBe(readFileSync(join(home, "todos.json"), "utf8"))
 }
 
 export const ID_RE = /^t_[a-z0-9]+$/

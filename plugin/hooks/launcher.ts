@@ -46,6 +46,8 @@ export interface Launch {
 
 type Os = 'windows' | 'darwin' | 'linux'
 const BUNDLE_EXE = /^(.*\.app)\/Contents\/MacOS\/[^/]+$/
+// A binary from target/debug is a `tauri dev` or plain `cargo build` run: it loads devUrl (a blank window without Vite).
+const DEV_BUILD = /[\\/]target[\\/]debug[\\/]/
 
 function targetFor(path: string, os: Os): Target {
   if (os === 'windows') return { kind: 'exe', path }
@@ -69,7 +71,7 @@ async function detectOs(d: LauncherDeps): Promise<Os> {
   return 'linux'
 }
 
-/** First hit wins: TTD_BIN, the window's breadcrumb, the OS's install location, the dev checkout, then macOS `open -a`. */
+/** First hit wins: TTD_BIN, the window's breadcrumb (not a debug build), the OS's install location, the release build in a dev checkout, then macOS `open -a`. */
 export async function resolveLauncher(d: LauncherDeps): Promise<Launch | null> {
   const os = await detectOs(d)
   const hit = (via: Launch['via'], path: string): Launch => {
@@ -83,7 +85,7 @@ export async function resolveLauncher(d: LauncherDeps): Promise<Launch | null> {
     try {
       const raw = await d.readText(joinPath(d.home, 'app.json'))
       const p = raw === null ? undefined : (JSON.parse(raw) as { path?: unknown }).path
-      if (typeof p === 'string' && p !== '' && (await d.exists(p))) return hit('breadcrumb', p)
+      if (typeof p === 'string' && p !== '' && !DEV_BUILD.test(p) && (await d.exists(p))) return hit('breadcrumb', p)
     } catch {
       // unreadable or malformed breadcrumb: keep looking
     }
@@ -111,13 +113,12 @@ export async function resolveLauncher(d: LauncherDeps): Promise<Launch | null> {
     }
   }
 
-  const exe = os === 'windows' ? '.exe' : ''
+  // Dev checkout (only under --plugin-dir: an installed plugin has no target/ beside it). Only what `tauri build` produced
+  // embeds the UI: the release bundle on macOS, the release binary elsewhere. target/debug is never launched (TTD_BIN can).
   const sep = os === 'windows' ? '\\' : '/'
-  for (const profile of ['debug', 'release']) {
-    // Only works under --plugin-dir: an installed plugin is just plugin/, with no target/ beside it.
-    const dev = [d.pluginRoot, '..', 'target', profile, `ttd${exe}`].join(sep)
-    if (await d.exists(dev)) return hit('dev', dev)
-  }
+  const built = (...parts: string[]): string => [d.pluginRoot, '..', 'target', 'release', ...parts].join(sep)
+  const dev = os === 'darwin' ? built('bundle', 'macos', 'TTD.app') : built(os === 'windows' ? 'ttd.exe' : 'ttd')
+  if (await d.exists(dev)) return hit('dev', dev)
 
   if (os === 'darwin' && !d.env.TTD_APP_DIRS) return { via: 'open-a', argv: ['open', '-a', 'TTD'], bin: 'TTD', unverified: true }
   return null

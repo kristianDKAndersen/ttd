@@ -39,7 +39,7 @@ fn creates_missing_home_directories_on_first_write() {
 }
 
 #[test]
-fn file_is_pretty_json_with_trailing_newline_and_bak_is_the_previous_bytes() {
+fn file_is_pretty_json_with_trailing_newline_and_bak_is_the_latest_commit_bytes() {
     let (_t, home) = setup();
     let store = Store::new(&home);
     add(&store, "t1", "one").unwrap();
@@ -47,9 +47,12 @@ fn file_is_pretty_json_with_trailing_newline_and_bak_is_the_previous_bytes() {
     assert!(first.ends_with(b"}\n"));
     assert!(!first.starts_with(&[0xEF, 0xBB, 0xBF]));
     assert!(String::from_utf8(first.clone()).unwrap().contains("\n  \"rev\": 1,"));
-    assert!(!home.join("todos.json.bak").exists(), "first write: nothing to back up");
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), first, "even the first commit has a bak");
     add(&store, "t2", "two").unwrap();
-    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), first, "bak = bytes before the last commit");
+    let second = fs::read(home.join("todos.json")).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), second, "bak = byte-identical copy of the latest commit");
+    assert_eq!(tmp_files(&home), 0);
 }
 
 #[test]
@@ -107,7 +110,7 @@ fn tmp_file_exists_while_committing_and_is_removed_after_a_cas_conflict() {
     }));
     let r = store.apply(&json!({"op":"add","id":"t2","title":"y"}), ctx).unwrap();
     assert_eq!(r.attempts, 2);
-    assert_eq!(seen_tmp.load(Ordering::SeqCst), 1, "temp file is written before the seam");
+    assert_eq!(seen_tmp.load(Ordering::SeqCst), 2, "the todos temp file and the bak temp file are written before the seam");
     assert_eq!(tmp_files(&home), 0);
 }
 
@@ -157,7 +160,7 @@ fn rename_is_retried_after_eperm_twice_then_succeeds() {
     let started = Instant::now();
     let r = add(&store, "t1", "x").unwrap();
     assert_eq!(r.rev, 1);
-    assert_eq!(flaky.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(flaky.calls.load(Ordering::SeqCst), 4, "commit: 2 failures + 1 success, then the bak rename");
     assert!(started.elapsed() >= Duration::from_millis(40), "two 20 ms back-offs");
     assert_eq!(tmp_files(&home), 0);
 }
@@ -435,7 +438,7 @@ fn corrupt_with_valid_bak_and_a_rejected_op_touches_nothing() {
 }
 
 #[test]
-fn corrupt_restore_quarantines_byte_identical_even_for_non_utf8_and_keeps_bak_as_found() {
+fn corrupt_restore_quarantines_byte_identical_even_for_non_utf8_and_rewrites_bak_from_the_commit() {
     let (_t, home) = setup();
     fs::create_dir_all(&home).unwrap();
     let bak = doc_json(2, vec![item("t1", "One", 0, "2026-01-01T08:00:00.000Z")]);
@@ -455,10 +458,125 @@ fn corrupt_restore_quarantines_byte_identical_even_for_non_utf8_and_keeps_bak_as
     assert_eq!(ts.len(), 16, "yyyymmddThhmmssZ: {ts}");
     assert!(ts.as_bytes()[8] == b'T' && ts.ends_with('Z') && ts[..8].bytes().all(|b| b.is_ascii_digit()));
     assert_eq!(token.len(), 12);
-    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), bak_bytes, "bak left as found, never overwritten with corrupt content");
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap(), "bak = the restored commit, never the corrupt bytes");
+    assert_ne!(fs::read(home.join("todos.json.bak")).unwrap(), bak_bytes);
     let doc = read_json(&home.join("todos.json"));
     assert_eq!(doc["rev"], 42);
     assert_eq!(doc["items"].as_array().unwrap().len(), 2);
+}
+
+/// Records every rename and checks, before and after each one, that todos.json exists (it did at the start).
+struct Watching {
+    home: PathBuf,
+    absent_at: std::sync::Mutex<Vec<String>>,
+    calls: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    fail_to: Option<&'static str>,
+}
+
+impl Watching {
+    fn new(home: &Path, fail_to: Option<&'static str>) -> Arc<Watching> {
+        Arc::new(Watching { home: home.to_path_buf(), absent_at: Default::default(), calls: Default::default(), fail_to })
+    }
+    fn check(&self, when: &str, from: &Path, to: &Path) {
+        if !self.home.join("todos.json").exists() {
+            self.absent_at.lock().unwrap().push(format!("{when} rename {} -> {}", from.display(), to.display()));
+        }
+    }
+}
+
+impl Renamer for Watching {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.calls.lock().unwrap().push((from.to_path_buf(), to.to_path_buf()));
+        self.check("before", from, to);
+        if let Some(suffix) = self.fail_to {
+            if to.to_string_lossy().ends_with(suffix) {
+                return Err(io::Error::other("injected failure"));
+            }
+        }
+        let r = fs::rename(from, to);
+        self.check("after", from, to);
+        r
+    }
+}
+
+#[test]
+fn bak_is_a_byte_identical_copy_of_the_latest_commit_written_by_tmp_and_rename() {
+    let (_t, home) = setup();
+    let w = Watching::new(&home, None);
+    let store = Store::new(&home).with_renamer(w.clone());
+    add(&store, "t1", "one").unwrap();
+    add(&store, "t2", "two").unwrap();
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap());
+    let into_bak: Vec<_> = w.calls.lock().unwrap().iter().filter(|(_, to)| to.ends_with("todos.json.bak")).cloned().collect();
+    assert_eq!(into_bak.len(), 2);
+    for (from, _) in into_bak {
+        assert!(from.file_name().unwrap().to_string_lossy().starts_with(".todos.json.tmp-"), "bak arrives by rename of a temp file: {from:?}");
+    }
+    assert_eq!(tmp_files(&home), 0);
+}
+
+#[test]
+fn a_failure_after_the_commit_rename_leaves_the_commit_durable_and_bak_one_version_behind() {
+    let (_t, home) = setup();
+    add(&Store::new(&home), "t1", "one").unwrap();
+    let v1 = fs::read(home.join("todos.json")).unwrap();
+    let w = Watching::new(&home, Some("todos.json.bak"));
+    let r = add(&Store::new(&home).with_renamer(w), "t2", "two").unwrap();
+    assert_eq!(r.rev, 2);
+    assert_eq!(read_json(&home.join("todos.json"))["items"].as_array().unwrap().len(), 2);
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), v1);
+    assert_eq!(tmp_files(&home), 0, "the unused bak temp file is removed");
+    add(&Store::new(&home), "t3", "three").unwrap();
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap(), "the next commit catches bak up");
+}
+
+#[test]
+fn restoring_from_bak_after_corruption_loses_no_acknowledged_write_including_the_last_status_flip() {
+    let (_t, home) = setup();
+    let store = Store::new(&home);
+    add(&store, "a", "A").unwrap();
+    add(&store, "b", "B").unwrap();
+    store.apply(&json!({"op":"set_status","id":"b","status":"in_progress"}), ApplyCtx::at(NOW)).unwrap();
+    let live = fs::read(home.join("todos.json")).unwrap();
+    let torn = live[..live.len() / 2].to_vec();
+    fs::write(home.join("todos.json"), &torn).unwrap();
+    let r = add(&store, "c", "C").unwrap();
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak]);
+    let doc = read_json(&home.join("todos.json"));
+    let got: Vec<(String, String)> = doc["items"].as_array().unwrap().iter().map(|i| (i["id"].as_str().unwrap().into(), i["status"].as_str().unwrap().into())).collect();
+    assert_eq!(got, [("a".into(), "todo".into()), ("b".into(), "in_progress".into()), ("c".into(), "todo".into())]);
+    assert_eq!(fs::read(quarantined(&home)[0].clone()).unwrap(), torn);
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap());
+}
+
+#[test]
+fn recovery_never_leaves_todos_json_absent_and_a_crash_before_the_final_rename_keeps_the_corrupt_file() {
+    let (_t, home) = setup();
+    fs::create_dir_all(&home).unwrap();
+    write_pretty(&home.join("todos.json.bak"), &doc_json(4, vec![item("a", "A", 0, "2026-01-01T08:00:00.000Z")]));
+    let torn = b"{\"rev\": 9, \"items\":[{\"id\":\"a".to_vec();
+    fs::write(home.join("todos.json"), &torn).unwrap();
+    let w = Watching::new(&home, None);
+    add(&Store::new(&home).with_renamer(w.clone()), "b", "B").unwrap();
+    assert_eq!(*w.absent_at.lock().unwrap(), Vec::<String>::new(), "todos.json present around every rename");
+
+    // crash simulation: the final rename (and only it) fails
+    let (_t2, home2) = setup();
+    fs::create_dir_all(&home2).unwrap();
+    write_pretty(&home2.join("todos.json.bak"), &doc_json(4, vec![item("a", "A", 0, "2026-01-01T08:00:00.000Z")]));
+    fs::write(home2.join("todos.json"), &torn).unwrap();
+    let w2 = Watching::new(&home2, Some("/todos.json"));
+    let e = add(&Store::new(&home2).with_renamer(w2.clone()), "b", "B").unwrap_err();
+    assert_eq!(e.code, ErrorCode::IoError);
+    assert_eq!(fs::read(home2.join("todos.json")).unwrap(), torn, "still there, same bytes");
+    assert_eq!(read_json(&home2.join("todos.json.bak"))["rev"], 4);
+    assert_eq!(tmp_files(&home2), 0);
+    assert!(w2.absent_at.lock().unwrap().is_empty());
+    let r = add(&Store::new(&home2), "b", "B").unwrap();
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak]);
+    for q in quarantined(&home2) {
+        assert_eq!(fs::read(q).unwrap(), torn);
+    }
 }
 
 #[test]
@@ -647,7 +765,7 @@ fn a_file_with_a_lone_surrogate_escape_is_read_and_written_not_quarantined() {
     assert!(r.warnings.is_empty());
     assert_eq!(r.rev, 5);
     assert_eq!(quarantined(&home).len(), 0);
-    assert_eq!(fs::read_to_string(home.join("todos.json.bak")).unwrap(), text, "bak keeps the original bytes");
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap(), "bak = the new commit");
 }
 
 #[test]
@@ -668,7 +786,8 @@ fn reset_corrupt_with_a_valid_bak_restores_it_like_the_ts_core() {
     let doc = read_json(&home.join("todos.json"));
     assert_eq!(doc["items"].as_array().unwrap().len(), 2, "items restored, not emptied");
     assert_eq!(doc["meta"], json!({"keep": true}));
-    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), bak_bytes, "bak left as found");
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap(), "bak = the restored commit");
+    assert_ne!(fs::read(home.join("todos.json.bak")).unwrap(), bak_bytes);
     assert_eq!(quarantined(&home).len(), 1);
     assert_eq!(store.apply(&json!({"op":"reset_corrupt"}), ApplyCtx::at(NOW)).unwrap_err().code, ErrorCode::NotCorrupt);
 }
