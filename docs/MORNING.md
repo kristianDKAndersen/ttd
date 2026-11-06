@@ -52,7 +52,7 @@ Data lives in `~/.ttd/todos.json`, with `todos.json.bak` as a copy of the latest
 - **Minor follow-ups from the review:**
   - Rust spins with no backoff if `store.lock` is a dangling symlink.
   - TS and Rust disagree on an owner `ts` written as `1e3`.
-  - A `.bak` rename failure after a commit is swallowed silently.
+  - (Fixed in the review's third round.) A `.bak` rename failure after a commit used to be swallowed; it is now retried once and reported as `backup_stale`, and a restore from a backup that is behind the damaged file reports it too.
 - **No LICENSE yet.** That is your call.
 
 ## Things only you can do

@@ -1,12 +1,12 @@
 // The mod's IO adapter for the store core (docs/contract/STORE.md section 12): files through $.fs, and the three
 // things $.fs cannot do (exclusive create, atomic replace, recursive remove) through $.process.run.
-import { createStore, joinPath, resolveHomeDir } from './store/index.ts'
+import { createStore, decodeUtf8, joinPath, resolveHomeDir } from './store/index.ts'
 import type { IO, Store, StoreOptions } from './store/index.ts'
 
 /** The slice of the engine's `$` the adapter uses. */
 export type ModHost = {
   fs: {
-    read(path: string): Promise<string | { base64: string }>
+    read(path: string, options?: { as: 'bytes' }): Promise<string | { base64: string }>
     write(path: string, text: string): Promise<void>
     exists(path: string): Promise<boolean>
     stat(path: string): Promise<{ mtimeMs: number }>
@@ -26,6 +26,14 @@ const CP_ATOMIC =
 export const RENAME_RETRIES = 5
 export const RENAME_RETRY_MS = 20
 const PROCESS_TIMEOUT_MS = 10_000
+
+/** Standard padded base64 to bytes (`atob` is in the host's globals; `Uint8Array.fromBase64` is not guaranteed). */
+export function base64Bytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
 
 const msgOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -62,8 +70,10 @@ export function createModIO($: ModHost, opts: { windows: boolean }): IO {
 
     async readText(p) {
       try {
-        const r = await $.fs.read(p)
-        return typeof r === 'string' ? r : null
+        // The default (text) read decodes lossily: bad bytes inside a JSON string become U+FFFD, the file still parses, and the
+        // next commit would rewrite it (and replace the good .bak) with the damage baked in. So read the bytes and decode strictly.
+        const r = await $.fs.read(p, { as: 'bytes' })
+        return typeof r === 'string' ? r : decodeUtf8(base64Bytes(r.base64))
       } catch (e) {
         if (await missing(p)) return null
         throw e

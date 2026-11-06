@@ -1,6 +1,7 @@
 // Node/bun implementation of the store IO (STORE.md section 10). The Claude Code mod has its own (mod-io.ts).
 import { copyFile, link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
+import { decodeUtf8 } from "../plugin/hooks/store/index.ts"
 import type { IO } from "../plugin/hooks/store/index.ts"
 
 export interface NodeIOOptions {
@@ -25,7 +26,7 @@ export function createNodeIO(opts: NodeIOOptions = {}): IO {
     pid: () => process.pid,
     async readText(p) {
       try {
-        return await readFile(p, "utf8")
+        return decodeUtf8(await readFile(p)) // not valid UTF-8 reads as text that never parses: corrupt, as in Rust
       } catch (e) {
         if (codeOf(e) === "ENOENT") return null
         throw e

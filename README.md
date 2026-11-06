@@ -102,9 +102,13 @@ Run the window once: it records its own path in `~/.ttd/app.json`, which is how 
   atomically after each commit) and a lock directory.
 - If `todos.json` is damaged, the damaged bytes are never overwritten: they are kept as
   `todos.corrupt-<time>-<token>.json`. With a valid `.bak`, the next write (or the window's **Recover**
-  button, `/ttd recover`) restores it, which loses nothing TTD wrote. Whoever triggered the restore is told
-  (warnings `corrupt_quarantined`, `restored_from_bak`): the window shows a notice, the agent gets it in the
-  tool result and `/ttd` prints it. With no valid `.bak`, writes are refused (`corrupt_no_backup`)
+  button, `/ttd recover`) restores it, which loses nothing TTD wrote unless `backup_stale` is reported. Whoever
+  triggered the restore is told (warnings `corrupt_quarantined`, `restored_from_bak`): the window shows a notice,
+  the agent gets it in the tool result and `/ttd` prints it. If the `.bak` rename after a commit failed twice, that
+  commit's result carries `backup_stale` (the backup is one change behind); and a restore whose damaged file still
+  shows a newer revision than the backup reports `backup_stale` too: the restored list may be missing the latest
+  changes, which remain in the quarantined `todos.corrupt-*.json`. A `todos.json` that is not valid UTF-8 counts as
+  damaged (it is quarantined byte-for-byte, never rewritten). With no valid `.bak`, writes are refused (`corrupt_no_backup`)
   until Recover, which starts an empty list.
 
 ## Limits
@@ -152,6 +156,7 @@ integration, and type-checking of the five mod source files (excluded from `tsco
 cover them).
 Releases: push a tag `v*` or run the `release` workflow manually. It runs CI, checks that the versions in
 `tauri.conf.json`, `app/src-tauri/Cargo.toml`, `package.json` and `plugin.json` agree (and equal the tag),
+and are plain numeric `MAJOR.MINOR.PATCH` (a pre-release suffix such as `-beta.1` is refused: the Windows MSI bundler rejects it),
 creates one draft release, then builds macOS, Windows and Linux into it. A maintainer publishes the draft.
 
 ## Next steps

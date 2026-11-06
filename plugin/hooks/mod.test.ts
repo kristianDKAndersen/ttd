@@ -47,10 +47,12 @@ function fakeHost(on: On, opts: Opts = {}) {
     return { value: { command: (e as { name: string }).name } }
   })
   on('fs.read', (_, e) => {
-    const p = (e as { path: string }).path
+    const { path: p, as } = e as { path: string; as?: string }
     if (opts.failRead && p === TODOS) return { deny: 'EIO: i/o error' }
     const t = files.get(p)
-    return t === undefined ? { deny: `ENOENT: no such file or directory, open '${p}'` } : { value: t }
+    if (t === undefined) return { deny: `ENOENT: no such file or directory, open '${p}'` }
+    // like the real host: text by default, { base64 } for { as: 'bytes' } (the store reads bytes and decodes them strictly)
+    return { value: as === 'bytes' ? { base64: btoa(String.fromCharCode(...new TextEncoder().encode(t))) } : t }
   })
   on('fs.write', (_, e) => {
     const { path, text } = e as { path: string; text: string }
@@ -534,6 +536,18 @@ test('a write that restored from .bak tells the model in plain words, and keeps 
   expect(r.notice).toContain('restored from its backup')
   expect(r.notice).toContain('todos.corrupt-')
   expect(r.todos).toContain('Notice: todos.json was damaged')
+  expect(stored(h).items.map((i: any) => i.title)).toEqual(['Saved', 'new'])
+})
+
+test('a restore from a bak that is behind the damaged file says so, and the quarantined copy holds the rest', async ($, on) => {
+  const h = fakeHost(on, { files: { [TODOS]: DAMAGED, [`${TODOS}.bak`]: SEED(4, [mk('t_a', 'Saved')]) } })
+  await start($)
+  const r = asObj(await call($, 'add', { title: 'new' }))
+  expect(r.ok).toBe(true)
+  expect(r.warnings).toEqual(['corrupt_quarantined', 'restored_from_bak', 'backup_stale'])
+  expect(r.notice).toContain('may be missing')
+  expect(r.notice).toContain('todos.corrupt-')
+  expect(r.todos).toContain('Notice:')
   expect(stored(h).items.map((i: any) => i.title)).toEqual(['Saved', 'new'])
 })
 

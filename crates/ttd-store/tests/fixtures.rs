@@ -178,13 +178,14 @@ fixture_tests! {
     fixture_12_read_normalises_order => "12",
     fixture_13_read_absent_file => "13",
     fixture_14_corrupt_restore_keeps_last_status_flip => "14",
+    fixture_15_corrupt_restore_from_stale_bak_warns => "15",
 }
 
 #[test]
-fn all_fourteen_fixtures_are_wired() {
+fn all_fifteen_fixtures_are_wired() {
     let n = fs::read_dir(fixtures_dir())
         .unwrap()
         .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".json"))
         .count();
-    assert_eq!(n, 14, "a fixture was added: wire it into fixture_tests!");
+    assert_eq!(n, 15, "a fixture was added: wire it into fixture_tests!");
 }

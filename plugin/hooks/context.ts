@@ -26,12 +26,19 @@ export function excerpt(body: string, max = BODY_EXCERPT): string {
   return cut(body.replace(/[\s\u2028\u2029]+/g, ' ').trim(), max)
 }
 
-/** Plain-words account of a recovery, from the store's warning codes; undefined when nothing was recovered. */
+/** Plain-words account of a recovery (or of a backup that fell behind), from the store's warning codes; undefined when there is nothing to say. */
 export function recoveryNote(warnings: readonly string[] | undefined): string | undefined {
   const restored = warnings?.includes('restored_from_bak')
-  if (!restored && !warnings?.includes('corrupt_quarantined')) return undefined
+  const stale = warnings?.includes('backup_stale') === true
+  if (!restored && !warnings?.includes('corrupt_quarantined')) {
+    return stale
+      ? 'The backup copy (todos.json.bak) could not be refreshed and is one change behind todos.json. If todos.json were damaged now, the latest change would only be in the damaged file. Tell the user.'
+      : undefined
+  }
   const what = restored ? 'it was restored from its backup' : 'a new empty list was started'
-  return `todos.json was damaged; ${what}. The damaged copy is kept next to it as todos.corrupt-*.json. Tell the user.`
+  const kept = 'The damaged copy is kept next to it as todos.corrupt-*.json.'
+  if (!stale) return `todos.json was damaged; ${what}. ${kept} Tell the user.`
+  return `todos.json was damaged; ${what}, but the backup was older than the damaged file, so the most recent changes may be missing from the list. They are still in the damaged copy, kept next to it as todos.corrupt-*.json. Tell the user.`
 }
 
 export interface RenderOpts {

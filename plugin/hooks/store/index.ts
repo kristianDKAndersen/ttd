@@ -17,6 +17,7 @@ export {
   validateOp,
 } from "./ops.ts"
 export type { ParsedDoc } from "./ops.ts"
+export { INVALID_UTF8_MARK, decodeUtf8 } from "./utf8.ts"
 export {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,

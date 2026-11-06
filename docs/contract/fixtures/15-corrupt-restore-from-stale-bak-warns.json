@@ -1,0 +1,109 @@
+{
+  "fixture": 1,
+  "name": "15-corrupt-restore-from-stale-bak-warns",
+  "description": "The .bak is behind: it is rev 7, but the corrupt todos.json still shows rev 9 (the writes of revs 8 and 9 were acknowledged, then the .bak refresh failed or never happened). Restoring still works (quarantine, restore the rev 7 .bak, take rev = max(bak.rev, scraped rev) = 9, apply the op, commit rev 10), but because the scraped rev is greater than bak.rev the restored list may be missing changes made after rev 7: the writer adds the warning backup_stale after corrupt_quarantined and restored_from_bak. Those changes remain in the quarantined todos.corrupt-*.json file. The .bak is then rewritten to equal the new todos.json.",
+  "setup": {
+    "file": {
+      "raw": "{\"schemaVersion\":1,\"rev\":9,\"items\":[{\"id\":\"t1\",\"title\":\"One\"},{\"id\":\"t2\",\"title\":\"Two\"},{\"id\":\"t9\",\"title\":\"Acknowledged after the last good backup\",\"bo"
+    },
+    "bak": {
+      "schemaVersion": 1,
+      "rev": 7,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        }
+      ]
+    },
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T13:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t3",
+        "title": "Three"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 10,
+        "result": {
+          "item": {
+            "id": "t3",
+            "title": "Three",
+            "body": "",
+            "status": "todo",
+            "order": 2,
+            "createdAt": "2026-01-01T13:00:00.000Z",
+            "updatedAt": "2026-01-01T13:00:00.000Z"
+          }
+        },
+        "warnings": [
+          "corrupt_quarantined",
+          "restored_from_bak",
+          "backup_stale"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 10,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "t3",
+          "title": "Three",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T13:00:00.000Z",
+          "updatedAt": "2026-01-01T13:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 1,
+    "quarantinedRaw": [
+      "{\"schemaVersion\":1,\"rev\":9,\"items\":[{\"id\":\"t1\",\"title\":\"One\"},{\"id\":\"t2\",\"title\":\"Two\"},{\"id\":\"t9\",\"title\":\"Acknowledged after the last good backup\",\"bo"
+    ],
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

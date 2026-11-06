@@ -43,7 +43,8 @@ jobs:
           for v in "$pkg" "$plugin" "$cargo"; do
             [ "$v" = "$tauri" ] || { echo "::error::version mismatch: tauri.conf.json=$tauri package.json=$pkg plugin.json=$plugin Cargo.toml=$cargo"; exit 1; }
           done
-          [[ "$tauri" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || { echo "::error::not a version: $tauri"; exit 1; }
+          # MAJOR.MINOR.PATCH only: the Windows MSI bundler rejects pre-release suffixes such as -beta.1.
+          [[ "$tauri" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a plain MAJOR.MINOR.PATCH version (no -beta.1 style suffix: the Windows MSI bundler rejects it): $tauri"; exit 1; }
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$tauri" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match the app version v$tauri"
             exit 1

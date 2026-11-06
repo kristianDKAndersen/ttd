@@ -648,6 +648,23 @@ describe('14 recovery notices and the corrupt banner wording', () => {
     expect($('.notice').textContent).not.toContain('restored from backup')
     expect($('.notice').textContent).toContain('todos.corrupt-')
   })
+  test('a restore from a stale backup says plainly that recent changes may be missing and where they are', async () => {
+    await mountApp(five(), { configure: (f) => (f.nextWarnings = [...BOTH, 'backup_stale']) })
+    await addOne()
+    const t = $('.notice').textContent ?? ''
+    expect(t).toContain('restored from backup')
+    expect(t).toContain('older')
+    expect(t).toContain('may be missing')
+    expect(t).toContain('todos.corrupt-')
+  })
+  test('a backup that could not be refreshed (no corruption) is a notice of its own', async () => {
+    await mountApp(five(), { configure: (f) => (f.nextWarnings = ['backup_stale']) })
+    await addOne()
+    const t = $('.notice').textContent ?? ''
+    expect(t).toContain('backup')
+    expect(t).toContain('behind')
+    expect(t).not.toContain('was damaged')
+  })
   test('other warnings and no warnings show no notice', async () => {
     await mountApp(five(), { configure: (f) => (f.nextWarnings = ['stale_lock_broken']) })
     await addOne()

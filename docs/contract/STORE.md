@@ -42,7 +42,8 @@ Window position/size is NOT stored here (Tauri window-state plugin keeps it in t
 }
 ```
 
-- UTF-8, no BOM, `JSON.stringify(doc, null, 2) + "\n"` style (2-space indent, trailing newline).
+- UTF-8, no BOM, `JSON.stringify(doc, null, 2) + "\n"` style (2-space indent, trailing newline). A `todos.json` that is
+  not valid UTF-8 is CORRUPT in every implementation, even if a lossy decode would make it parse.
   Key order and whitespace are NOT significant to readers; fixtures compare parsed values (deep equal).
 - `schemaVersion`: integer, currently `1`.
 - `rev`: integer >= 0, monotonic. An absent file is the empty doc: `{schemaVersion:1, rev:0, items:[]}`.
@@ -97,7 +98,8 @@ Error codes (`error`): `invalid_op`, `invalid_title`, `too_long`, `limit_exceede
 { "ok": false, "error": code, "message"?: string }
 ```
 
-Warning codes: `corrupt_quarantined`, `restored_from_bak`, `stale_lock_broken`.
+Warning codes: `corrupt_quarantined`, `restored_from_bak`, `stale_lock_broken`, `backup_stale` (the `.bak` is, or may be,
+behind `todos.json`; sections 4 and 8).
 
 ## 4. Atomic write
 
@@ -120,13 +122,17 @@ write either aborts the op with nothing committed), then after the CAS:
 
 Consequences, all deliberate:
 
-- A crash between 1 and 2, or a failed rename in 2, leaves `.bak` ONE VERSION BEHIND `todos.json`. Nothing
-  acknowledged is at risk: the crashed writer never acknowledged its write (its caller got no result), and a later
-  successful commit catches `.bak` up. A failed step 2 does not fail the op (the commit stands); it is not reported
-  as a warning either.
+- A crash between 1 and 2 leaves `.bak` ONE VERSION BEHIND `todos.json`. Nothing acknowledged is at risk: the
+  crashed writer never acknowledged its write (its caller got no result), and a later successful commit catches `.bak`
+  up.
+- A failed rename in 2 is different, because the writer DID acknowledge. Step 2 is retried once (on top of the
+  section 4 rename retries); if it still fails, the commit stands and that commit's envelope carries the warning
+  `backup_stale` (added after any other warnings of the op, once). The next successful commit catches `.bak` up.
+  Until then a restore can be missing the stale commits; section 8 reports that.
 - Every commit writes `.bak`, including the first one, `reset_corrupt`, and a restore from `.bak` itself. A no-op
   that does not write leaves both files alone.
-- Restoring from `.bak` after a clobbered `todos.json` therefore loses nothing a TTD writer acknowledged.
+- Restoring from `.bak` after a clobbered `todos.json` therefore loses nothing a TTD writer acknowledged, unless
+  `backup_stale` is reported (see above and section 8).
 - A `.bak` from an older build (the version before the last commit) is replaced by the next commit.
 
 ## 5. Concurrency protocol (every write op, every implementation)
@@ -231,12 +237,14 @@ Writers (under the lock) that find `todos.json` corrupt:
    scraped from the corrupt text with `/"rev"\s*:\s*(\d+)/` (0 if none), so `rev` never repeats a value a live
    window may have shown; apply the op (a rejected op changes nothing, nothing is quarantined); commit with
    `rev = base.rev + 1` (always write, even when the op was a no-op). Warnings `corrupt_quarantined` and
-   `restored_from_bak`. The commit is the ordinary sequence of section 4 with ONE extra step, and the order is
+   `restored_from_bak`, then `backup_stale` when `rawRev > bak.rev` (the damaged text shows a newer revision than the
+   backup, so the restored list may be missing changes made after `bak.rev`; they remain in the quarantined file).
+   `backup_stale` is added once, also when step 4 below fails. The commit is the ordinary sequence of section 4 with ONE extra step, and the order is
    normative (TS and Rust identical):
 
    1. write both temp files (new `todos.json`, new `.bak`), run the CAS against the corrupt bytes;
    2. copy the corrupt `todos.json` byte-identical to `todos.corrupt-<ts>-<token>.json`, creating it atomically
-      (Rust: hard link, copy as fallback; TS: `IO.copyFile`, a hard link or copy-then-rename; never a partial file);
+      (Rust: hard link, else copy to `<name>.part` and rename; TS: `IO.copyFile`, a hard link or copy-then-rename; never a partial file);
    3. rename the temp over `todos.json`; if that fails, delete the quarantine copy (the corrupt file is still there);
    4. rename the bak temp over `todos.json.bak`.
 
@@ -274,7 +282,7 @@ crash-recovery integration test does not have to wait 15 s.
 ```ts
 interface IO {                       // injected; node-io.ts for bun/node, mod-io.ts for the mod ($.fs / $.process)
   now(): number; sleep(ms: number): Promise<void>; random(): number; pid(): number
-  readText(p: string): Promise<string | null>          // null = ENOENT
+  readText(p: string): Promise<string | null>          // null = ENOENT; bytes that are not valid UTF-8 come back as text that never parses (decodeUtf8), so they read as CORRUPT
   writeText(p: string, t: string): Promise<void>        // creates parent dirs
   rename(from: string, to: string): Promise<void>       // atomic replace, retries per section 4; MUST fail, never nest, when `to` is a directory
   copyFile(from: string, to: string): Promise<void>     // `to` (must not exist) = byte-identical copy of `from`, complete or absent
@@ -334,6 +342,7 @@ of `.todos.json.tmp-*`). Real files in a real temp dir; no mocked filesystem. In
 | 12 | read normalises order without writing |
 | 13 | read of an absent file |
 | 14 | CORRUPT after a status flip: the restore keeps the flip (the last acknowledged write), .bak ends equal to the new file |
+| 15 | CORRUPT with a .bak that is behind (scraped rev > bak.rev): restore works and adds `backup_stale` after the two restore warnings |
 
 Real concurrency (many processes, mixed implementations) is not a fixture: it is the wave 3
 integration test in `docs/plan/plan.md`.
@@ -342,7 +351,7 @@ integration test in `docs/plan/plan.md`.
 
 | IO method | POSIX | Windows (UNVERIFIED on the dev box) |
 |---|---|---|
-| `readText` | `$.fs.read` (reject ENOENT -> null) | same |
+| `readText` | `$.fs.read(p, { as: "bytes" })` decoded strictly (reject ENOENT -> null; invalid UTF-8 -> corrupt, never absent: the default text read would decode it lossily to U+FFFD) | same |
 | `writeText` | `$.fs.write` | same |
 | `rename` | `$.process.run(["sh","-c",<script>,"sh",a,b])`; the script refuses (exit 75) when `b` is a directory, else `exec mv -f -- a b` | `["cmd","/c","move","/Y",a,b]` |
 | `copyFile` | `["sh","-c",<script>,"sh",a,b]`; refuses an existing `b`, tries `ln a b`, else `cp a b.part` + `mv -f` | `["cmd","/c","copy","/Y","/B",a,b]` |

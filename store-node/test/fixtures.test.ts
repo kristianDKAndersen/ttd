@@ -18,8 +18,8 @@ const asText = (v: unknown): string => (isRaw(v) ? v.raw : JSON.stringify(v, nul
 
 const names = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith(".json")).sort()
 
-test("all 14 fixtures are present", () => {
-  expect(names.length).toBe(14)
+test("all 15 fixtures are present", () => {
+  expect(names.length).toBe(15)
 })
 
 for (const name of names) {

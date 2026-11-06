@@ -52,7 +52,7 @@ export type ErrorCode =
   | "conflict_exhausted"
   | "io_error"
 
-export type Warning = "corrupt_quarantined" | "restored_from_bak" | "stale_lock_broken"
+export type Warning = "corrupt_quarantined" | "restored_from_bak" | "stale_lock_broken" | "backup_stale"
 
 export class StoreError extends Error {
   readonly code: ErrorCode

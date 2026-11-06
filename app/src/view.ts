@@ -101,11 +101,16 @@ interface Banner {
   message?: string
 }
 
-/** What a recovery did, from the store's warnings; undefined when nothing was recovered. */
+/** What a recovery (or a backup that fell behind) did, from the store's warnings; undefined when there is nothing to say. */
 function recoveryNotice(warnings: readonly string[] | undefined): string | undefined {
-  if (!warnings?.includes('corrupt_quarantined') && !warnings?.includes('restored_from_bak')) return undefined
+  const stale = warnings?.includes('backup_stale') === true
+  if (!warnings?.includes('corrupt_quarantined') && !warnings?.includes('restored_from_bak')) {
+    return stale ? 'The backup copy (todos.json.bak) could not be refreshed and is one change behind your list. If todos.json were damaged now, the latest change would only be in the damaged file.' : undefined
+  }
   const what = warnings.includes('restored_from_bak') ? 'restored from backup' : 'started an empty list'
-  return `todos.json was damaged; ${what}. The damaged copy is kept next to it as todos.corrupt-*.json.`
+  const kept = 'The damaged copy is kept next to it as todos.corrupt-*.json.'
+  if (!stale) return `todos.json was damaged; ${what}. ${kept}`
+  return `todos.json was damaged; ${what}, but the backup was older than the damaged file, so your latest changes may be missing from the list. They are still in the damaged copy, kept next to it as todos.corrupt-*.json.`
 }
 
 interface DragCandidate {

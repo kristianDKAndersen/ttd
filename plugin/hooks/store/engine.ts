@@ -261,6 +261,8 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
             result = r.result
           }
           warnings.push("corrupt_quarantined", "restored_from_bak")
+          // The damaged text still shows a newer rev than the backup: acknowledged changes may sit only in the quarantined copy.
+          if (rawRev > bak.rev) warnings.push("backup_stale")
         } else {
           base = { ...emptyDoc(), rev: rawRev }
           next = base
@@ -311,14 +313,17 @@ export function createStore(io: IO, homeDir: string, opts: StoreOptions = {}): S
           throw e
         }
         committed = true
-        // Section 4: .bak = the commit just made, swapped in atomically. Failing here (or a crash) leaves the previous
-        // .bak, one version behind; the commit is already durable and acknowledged.
-        try {
-          await io.rename(bakTmp, bakFile)
-          bakInPlace = true
-        } catch {
-          // best effort, see above
+        // Section 4: .bak = the commit just made, swapped in atomically. The commit is already durable and acknowledged, so a
+        // rename that fails twice (or a crash here) leaves the previous .bak behind, and the envelope says so: backup_stale.
+        for (let tries = 0; tries < 2 && !bakInPlace; tries++) {
+          try {
+            await io.rename(bakTmp, bakFile)
+            bakInPlace = true
+          } catch {
+            // retried once, then reported
+          }
         }
+        if (!bakInPlace && !warnings.includes("backup_stale")) warnings.push("backup_stale")
         return { ok: true, changed: true, rev: next.rev, result, warnings, attempts: attempt, doc: next }
       } finally {
         for (const [path, gone] of [[tmp, committed], [bakTmp, bakInPlace]] as const) {

@@ -447,7 +447,7 @@ fn corrupt_restore_quarantines_byte_identical_even_for_non_utf8_and_rewrites_bak
     let raw: Vec<u8> = b"\xff\xfe{\"rev\" :  41, garbage \x00\x80".to_vec();
     fs::write(home.join("todos.json"), &raw).unwrap();
     let r = add(&Store::new(&home), "t2", "Two").unwrap();
-    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak]);
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak, Warning::BackupStale]);
     assert_eq!(r.rev, 42, "rev = max(bak.rev 2, scraped 41) + 1");
     let q = quarantined(&home);
     assert_eq!(q.len(), 1);
@@ -573,7 +573,7 @@ fn recovery_never_leaves_todos_json_absent_and_a_crash_before_the_final_rename_k
     assert_eq!(tmp_files(&home2), 0);
     assert!(w2.absent_at.lock().unwrap().is_empty());
     let r = add(&Store::new(&home2), "b", "B").unwrap();
-    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak]);
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak, Warning::BackupStale]);
     for q in quarantined(&home2) {
         assert_eq!(fs::read(q).unwrap(), torn);
     }
@@ -782,7 +782,7 @@ fn reset_corrupt_with_a_valid_bak_restores_it_like_the_ts_core() {
     assert!(r.changed);
     assert_eq!(r.rev, 10, "max(bak.rev 6, scraped 9) + 1");
     assert_eq!(r.result, json!({}));
-    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak]);
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak, Warning::BackupStale]);
     let doc = read_json(&home.join("todos.json"));
     assert_eq!(doc["items"].as_array().unwrap().len(), 2, "items restored, not emptied");
     assert_eq!(doc["meta"], json!({"keep": true}));
@@ -882,4 +882,111 @@ fn held_break_guard_over_a_stale_lock_times_out_and_leaves_both_alone() {
     assert_eq!(add(&store, "t1", "x").unwrap_err().code, ErrorCode::LockTimeout);
     assert!(started.elapsed() < Duration::from_millis(2_300));
     assert!(home.join("store.lock").exists() && home.join("store.lock.break").exists());
+}
+
+// ---- backup_stale (STORE.md sections 4 and 8): a bak that is provably or possibly behind is never silent ----
+
+/// Fails the first `failures` renames whose destination is the .bak; every other rename is real.
+struct FlakyBak {
+    failures_left: AtomicU32,
+    kind: io::ErrorKind,
+    bak_calls: AtomicU32,
+}
+impl FlakyBak {
+    fn new(failures: u32, kind: io::ErrorKind) -> Arc<FlakyBak> {
+        Arc::new(FlakyBak { failures_left: AtomicU32::new(failures), kind, bak_calls: AtomicU32::new(0) })
+    }
+}
+impl Renamer for FlakyBak {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if to.file_name().is_some_and(|n| n == "todos.json.bak") {
+            self.bak_calls.fetch_add(1, Ordering::SeqCst);
+            if self.failures_left.load(Ordering::SeqCst) > 0 {
+                self.failures_left.fetch_sub(1, Ordering::SeqCst);
+                return Err(io::Error::new(self.kind, "injected bak failure"));
+            }
+        }
+        fs::rename(from, to)
+    }
+}
+
+#[test]
+fn a_bak_rename_that_fails_once_is_retried_and_reports_no_warning() {
+    let (_t, home) = setup();
+    add(&Store::new(&home), "a", "one").unwrap();
+    let f = FlakyBak::new(1, io::ErrorKind::NotFound);
+    let r = add(&Store::new(&home).with_renamer(f.clone()), "b", "two").unwrap();
+    assert!(r.warnings.is_empty());
+    assert_eq!(f.bak_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), fs::read(home.join("todos.json")).unwrap());
+    assert_eq!(tmp_files(&home), 0);
+}
+
+#[test]
+fn a_bak_rename_that_fails_twice_keeps_the_commit_and_adds_backup_stale() {
+    let (_t, home) = setup();
+    add(&Store::new(&home), "a", "one").unwrap();
+    let v1 = fs::read(home.join("todos.json")).unwrap();
+    let f = FlakyBak::new(100, io::ErrorKind::NotFound);
+    let r = add(&Store::new(&home).with_renamer(f.clone()), "b", "two").unwrap();
+    assert_eq!(r.warnings, vec![Warning::BackupStale]);
+    assert_eq!(r.to_envelope()["warnings"], json!(["backup_stale"]));
+    assert_eq!(r.rev, 2);
+    assert_eq!(f.bak_calls.load(Ordering::SeqCst), 2, "one try plus one retry");
+    assert_eq!(read_json(&home.join("todos.json"))["rev"], 2);
+    assert_eq!(fs::read(home.join("todos.json.bak")).unwrap(), v1);
+    assert_eq!(tmp_files(&home), 0);
+}
+
+#[test]
+fn the_worst_case_ack_then_stale_bak_then_torn_file_is_reported_at_both_ends() {
+    let (_t, home) = setup();
+    let ok = Store::new(&home);
+    add(&ok, "a", "a").unwrap();
+    add(&ok, "b", "b").unwrap();
+    let f = FlakyBak::new(100, io::ErrorKind::NotFound);
+    let c = add(&Store::new(&home).with_renamer(f), "c", "c-acknowledged").unwrap();
+    assert_eq!(c.warnings, vec![Warning::BackupStale]);
+    let live = fs::read(home.join("todos.json")).unwrap();
+    let torn = live[..live.len() / 2].to_vec();
+    fs::write(home.join("todos.json"), &torn).unwrap();
+    let d = add(&ok, "d", "d").unwrap();
+    assert_eq!(d.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak, Warning::BackupStale]);
+    let ids: Vec<String> = read_json(&home.join("todos.json"))["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, vec!["a", "b", "d"], "c is not in the live list ...");
+    let q: Vec<String> = names(&home).into_iter().filter(|n| n.starts_with("todos.corrupt-")).collect();
+    assert_eq!(fs::read(home.join(&q[0])).unwrap(), torn, "... but it is in the quarantined file");
+}
+
+#[test]
+fn restore_warns_only_when_the_scraped_rev_is_greater_than_bak_rev() {
+    for (raw_rev, stale) in [(4u64, false), (5, true), (9, true)] {
+        let (_t, home) = setup();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("todos.json"), format!("{{\"schemaVersion\":1,\"rev\":{raw_rev},\"items\":[{{\"id\":\"a")).unwrap();
+        write_pretty(&home.join("todos.json.bak"), &doc_json(4, vec![item("a", "A", 0, NOW)]));
+        let r = add(&Store::new(&home), "b", "b").unwrap();
+        let mut want = vec![Warning::CorruptQuarantined, Warning::RestoredFromBak];
+        if stale {
+            want.push(Warning::BackupStale);
+        }
+        assert_eq!(r.warnings, want, "rev {raw_rev}");
+    }
+}
+
+#[test]
+fn reset_corrupt_restoring_a_stale_bak_warns_too_and_a_missing_bak_never_does() {
+    let (_t, home) = setup();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("todos.json"), "{\"schemaVersion\":1,\"rev\":9,\"items\":[").unwrap();
+    write_pretty(&home.join("todos.json.bak"), &doc_json(4, vec![item("a", "A", 0, NOW)]));
+    let r = Store::new(&home).apply(&json!({"op":"reset_corrupt"}), ApplyCtx::at(NOW)).unwrap();
+    assert_eq!(r.warnings, vec![Warning::CorruptQuarantined, Warning::RestoredFromBak, Warning::BackupStale]);
+    assert_eq!(r.rev, 10);
+
+    let (_t2, home2) = setup();
+    fs::create_dir_all(&home2).unwrap();
+    fs::write(home2.join("todos.json"), "{\"rev\":9,\"items\":[").unwrap();
+    let r2 = Store::new(&home2).apply(&json!({"op":"reset_corrupt"}), ApplyCtx::at(NOW)).unwrap();
+    assert_eq!(r2.warnings, vec![Warning::CorruptQuarantined]);
 }

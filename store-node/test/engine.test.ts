@@ -191,7 +191,7 @@ test("m3: a crash before the final rename leaves the corrupt todos.json in place
   expect(tmpFiles(home)).toEqual([])
   expect(spy.todosAbsent).toEqual([])
   const r2 = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
-  expect(r2.ok && r2.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  expect(r2.ok && r2.warnings).toEqual(["corrupt_quarantined", "restored_from_bak", "backup_stale"])
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
   for (const f of ls(home).filter((x) => x.startsWith("todos.corrupt-"))) expect(readFileSync(join(home, f), "utf8")).toBe(torn)
 })
@@ -539,7 +539,7 @@ test("corrupt + valid bak + no-op op: still writes (rev jumps), reports changed:
   const r = await createStore(createNodeIO(), home).apply({ op: "delete", id: "zz" }, { now: NOW })
   expect(r.ok && r.changed).toBe(true)
   expect(r.ok && r.rev).toBe(10)
-  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak", "backup_stale"])
   expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["a"])
 })
@@ -560,7 +560,7 @@ test("reset_corrupt with a valid bak restores the bak (never an empty list over 
   const r = await createStore(createNodeIO(), home).apply({ op: "reset_corrupt" }, { now: NOW })
   expect(r.ok && r.rev).toBe(12)
   expect(r.ok && r.result).toEqual({})
-  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak", "backup_stale"])
   expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
   expect(ls(home).filter((f) => f.startsWith("todos.corrupt-")).length).toBe(1)
   expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
@@ -636,4 +636,107 @@ test("unknown top-level and item fields survive restore-from-bak and normal writ
   const d: any = readDoc(home)
   expect(d.meta).toEqual({ k: 1 })
   expect(d.items[0].color).toBe("red")
+})
+
+// ---- backup_stale (STORE.md sections 4 and 8): a bak that is provably or possibly behind is never silent ----
+
+const failBakRename = (home: string, times: number) => {
+  let left = times
+  const calls: string[] = []
+  const spy = spyIO(home, (name, a) => {
+    if (name === "rename" && a[1]!.endsWith("todos.json.bak")) {
+      calls.push(a[1]!)
+      return left-- > 0
+    }
+    return false
+  })
+  return { io: spy.io, calls }
+}
+
+test("backup_stale: a bak rename that fails once is retried and the commit reports no warning", async () => {
+  const home = tmpHome()
+  await createStore(createNodeIO(), home).apply(add("one", "a"), { now: NOW })
+  const f = failBakRename(home, 1)
+  const r = await createStore(f.io, home).apply(add("two", "b"), { now: NOW })
+  expect(r.ok && r.warnings).toEqual([])
+  expect(f.calls.length).toBe(2)
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(readFileSync(join(home, "todos.json"), "utf8"))
+  expect(tmpFiles(home)).toEqual([])
+})
+
+test("backup_stale: a bak rename that fails twice leaves the commit standing and adds the warning to its envelope", async () => {
+  const home = tmpHome()
+  await createStore(createNodeIO(), home).apply(add("one", "a"), { now: NOW })
+  const v1 = readFileSync(join(home, "todos.json"), "utf8")
+  const f = failBakRename(home, 2)
+  const r = await createStore(f.io, home).apply(add("two", "b"), { now: NOW })
+  expect(r.ok && r.warnings).toEqual(["backup_stale"])
+  expect(r.ok && r.rev).toBe(2)
+  expect(f.calls.length).toBe(2) // one try plus one retry
+  expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b"])
+  expect(readFileSync(join(home, "todos.json.bak"), "utf8")).toBe(v1)
+  expect(tmpFiles(home)).toEqual([])
+})
+
+test("backup_stale: the worst case of the review (ack c, bak refresh fails, file torn) is reported at both ends", async () => {
+  const home = tmpHome()
+  const store0 = createStore(createNodeIO(), home)
+  await store0.apply(add("a", "a"), { now: NOW })
+  await store0.apply(add("b", "b"), { now: NOW })
+  const f = failBakRename(home, 2)
+  const c = await createStore(f.io, home).apply(add("c-acknowledged", "c"), { now: NOW })
+  expect(c.ok && c.warnings).toEqual(["backup_stale"])
+  const live = readFileSync(join(home, "todos.json"), "utf8")
+  const torn = live.slice(0, Math.floor(live.length / 2))
+  writeFileSync(join(home, "todos.json"), torn)
+  const d = await store0.apply(add("d", "d"), { now: NOW })
+  expect(d.ok && d.warnings).toEqual(["corrupt_quarantined", "restored_from_bak", "backup_stale"])
+  expect(readDoc(home).items.map((i) => i.id)).toEqual(["a", "b", "d"]) // c is not in the live list ...
+  const q = ls(home).filter((n) => n.startsWith("todos.corrupt-"))
+  expect(readFileSync(join(home, q[0]!), "utf8")).toBe(torn) // ... but it is in the quarantined file
+})
+
+test("backup_stale: restore warns only when the scraped rev is greater than bak.rev", async () => {
+  for (const [rawRev, stale] of [[4, false], [5, true], [9, true]] as const) {
+    const home = tmpHome()
+    put(home, "todos.json", `{"schemaVersion":1,"rev":${rawRev},"items":[{"id":"a`)
+    put(home, "todos.json.bak", docOf(["a"], 4))
+    const r = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
+    expect(r.ok && r.warnings, `rev ${rawRev}`).toEqual(stale ? ["corrupt_quarantined", "restored_from_bak", "backup_stale"] : ["corrupt_quarantined", "restored_from_bak"])
+  }
+})
+
+test("backup_stale: a corrupt file with no readable rev, or no bak at all, never claims staleness", async () => {
+  const home = tmpHome()
+  put(home, "todos.json", "{not json")
+  put(home, "todos.json.bak", docOf(["a"], 4))
+  const r = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  const home2 = tmpHome()
+  put(home2, "todos.json", '{"rev":9,"items":[')
+  const r2 = await createStore(createNodeIO(), home2).apply({ op: "reset_corrupt" }, { now: NOW })
+  expect(r2.ok && r2.warnings).toEqual(["corrupt_quarantined"])
+})
+
+test("backup_stale: reset_corrupt restoring a stale bak warns too", async () => {
+  const home = tmpHome()
+  put(home, "todos.json", '{"schemaVersion":1,"rev":9,"items":[')
+  put(home, "todos.json.bak", docOf(["a"], 4))
+  const r = await createStore(createNodeIO(), home).apply({ op: "reset_corrupt" }, { now: NOW })
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak", "backup_stale"])
+  expect(r.ok && r.rev).toBe(10)
+})
+
+test("m2 parity: node IO treats a todos.json that is not valid UTF-8 as corrupt (like Rust), even when the JSON structure survives", async () => {
+  const home = tmpHome()
+  const t = Buffer.from(text(docOf(["a"], 3)).replace('"A"', '"AXB"'))
+  const i = t.indexOf("X")
+  const bad = Buffer.concat([t.subarray(0, i), Buffer.from([0xe2, 0x82]), t.subarray(i + 1)])
+  writeFileSync(join(home, "todos.json"), bad)
+  put(home, "todos.json.bak", docOf(["a"], 3))
+  const r = await createStore(createNodeIO(), home).apply(add("b", "b"), { now: NOW })
+  expect(r.ok && r.warnings).toEqual(["corrupt_quarantined", "restored_from_bak"])
+  const q = ls(home).filter((n) => n.startsWith("todos.corrupt-"))
+  expect(readFileSync(join(home, q[0]!)).equals(bad)).toBe(true)
+  expect(readDoc(home).items.map((x) => x.title)).toEqual(["A", "b"])
 })

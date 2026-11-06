@@ -322,6 +322,21 @@ test('recoveryNote: restored, quarantined only, and nothing for other warnings',
   expect(recoveryNote(undefined)).toBeUndefined()
 })
 
+test('recoveryNote: a stale backup is named in plain words and points at the quarantined copy', () => {
+  const n = recoveryNote(['corrupt_quarantined', 'restored_from_bak', 'backup_stale'])!
+  expect(n).toContain('restored from its backup')
+  expect(n).toContain('older than')
+  expect(n).toContain('may be missing')
+  expect(n).toContain('todos.corrupt-*.json')
+  expect(n).toContain('Tell the user')
+  const only = recoveryNote(['backup_stale'])!
+  expect(only).toContain('todos.json.bak')
+  expect(only).toContain('behind')
+  expect(only).toContain('Tell the user')
+  expect(only).not.toContain('was damaged')
+  expect(recoveryNote(['restored_from_bak'])).not.toContain('may be missing')
+})
+
 test('renderContext with warnings: one Notice line right after the intro, inside the block and the char cap', () => {
   const plain = renderContext(docOf([item(0)]), { file: FILE })
   expect(plain).not.toContain('Notice:')

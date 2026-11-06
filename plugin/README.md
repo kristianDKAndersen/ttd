@@ -23,7 +23,7 @@ Six tools, always in the tool list (`mcp__ttd__<name>`). Items are addressed by 
 | `reorder` | `id`, `after` (id or `null` for the top) | move directly after another item |
 | `delete` | `id` | remove (deleting a missing id succeeds with `changed: false`) |
 
-Every tool returns one JSON text: `{ ok, changed, rev, result, todos, warnings?, notice? }` or `{ ok: false, error, message?, hint? }`. Failures are results, not tool errors. `todos` is the updated list in the same `<ttd-todos>` block described below. When a write had to recover a damaged `todos.json` (`warnings` has `corrupt_quarantined` / `restored_from_bak`), `notice` says so in words and the block carries a `Notice:` line, so the agent can tell the user.
+Every tool returns one JSON text: `{ ok, changed, rev, result, todos, warnings?, notice? }` or `{ ok: false, error, message?, hint? }`. Failures are results, not tool errors. `todos` is the updated list in the same `<ttd-todos>` block described below. When a write had to recover a damaged `todos.json` (`warnings` has `corrupt_quarantined` / `restored_from_bak`, plus `backup_stale` when the backup was behind), `notice` says so in words and the block carries a `Notice:` line, so the agent can tell the user.
 
 On each prompt the mod attaches the list as a trailing context block, only when it differs from what the model last saw (a window edit, or an edit from another session). Never for slash commands, never for an empty list the model has not seen, and again after a compaction or `/clear`:
 
@@ -65,7 +65,7 @@ At most 40 open items and 6000 characters; done items collapse to a count and th
 
 ## How it writes
 
-The mod runs the same store core as the window's CLI and the dev shim (`hooks/store/`, no host API inside). Its IO adapter (`hooks/mod-io.ts`) reads and writes files through `$.fs` and does the three things `$.fs` cannot (exclusive `mkdir` as the lock, `mv -f` as the atomic replace, `rm -rf`) through `$.process.run`. Concurrent writers (the window, other Claude sessions, CLIs) lose nothing: lock, revision check, retry. `todos.json.bak` is a copy of the latest committed file, so recovering a damaged `todos.json` from it loses nothing TTD wrote; with no valid backup, writes are refused (`corrupt_no_backup`) until `/ttd recover` or the window's Recover button. See `docs/contract/STORE.md`.
+The mod runs the same store core as the window's CLI and the dev shim (`hooks/store/`, no host API inside). Its IO adapter (`hooks/mod-io.ts`) reads and writes files through `$.fs` and does the three things `$.fs` cannot (exclusive `mkdir` as the lock, `mv -f` as the atomic replace, `rm -rf`) through `$.process.run`. Concurrent writers (the window, other Claude sessions, CLIs) lose nothing: lock, revision check, retry. `todos.json.bak` is a copy of the latest committed file, so recovering a damaged `todos.json` from it loses nothing TTD wrote unless `backup_stale` is reported (the backup rename failed after a commit, or the damaged file was newer than the backup; the newer data stays in `todos.corrupt-*.json`); with no valid backup, writes are refused (`corrupt_no_backup`) until `/ttd recover` or the window's Recover button. See `docs/contract/STORE.md`.
 
 ## Limits
 

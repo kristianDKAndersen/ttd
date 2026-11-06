@@ -298,8 +298,13 @@ impl Store {
             warnings.push(Warning::CorruptQuarantined);
             let mut doc = match self.read_bak() {
                 Some(mut bak) => {
+                    // The damaged text still shows a newer rev than the backup: acknowledged changes may sit only in the quarantined copy.
+                    let stale = raw_rev > bak.rev;
                     bak.rev = bak.rev.max(raw_rev);
                     warnings.push(Warning::RestoredFromBak);
+                    if stale {
+                        warnings.push(Warning::BackupStale);
+                    }
                     bak.normalized()
                 }
                 None => {
@@ -311,18 +316,24 @@ impl Store {
             doc.rev = doc.rev.saturating_add(1);
             let commit = Commit { doc: &doc, expected: Expected::Bytes(raw.clone()), quarantine: Some(raw) };
             return Ok(match self.commit(commit, ctx)? {
-                true => Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: json!({}), warnings, attempts: attempt, doc })),
-                false => Attempt::Conflict,
+                Some(bak_in_place) => {
+                    push_stale_unless(&mut warnings, bak_in_place);
+                    Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: json!({}), warnings, attempts: attempt, doc }))
+                }
+                None => Attempt::Conflict,
             });
         }
 
         // Base document, what the file must still be at the CAS step, and whether this is a restore.
+        let mut stale_bak = false;
         let (base, expected, restore_raw) = match state {
             State::Absent => (Doc::empty(), Expected::Absent, None),
             State::Valid { raw, doc } => (doc, Expected::Bytes(raw), None),
             State::Corrupt { raw } => {
                 let Some(mut bak) = self.read_bak() else { return Err(StoreError::new(ErrorCode::CorruptNoBackup)) };
-                bak.rev = bak.rev.max(scrape_rev(&raw));
+                let raw_rev = scrape_rev(&raw);
+                stale_bak = raw_rev > bak.rev;
+                bak.rev = bak.rev.max(raw_rev);
                 (bak, Expected::Bytes(raw.clone()), Some(raw))
             }
         };
@@ -339,17 +350,24 @@ impl Store {
         if restoring {
             warnings.push(Warning::CorruptQuarantined);
             warnings.push(Warning::RestoredFromBak);
+            if stale_bak {
+                warnings.push(Warning::BackupStale);
+            }
         }
         let commit = Commit { doc: &doc, expected, quarantine: restore_raw };
         Ok(match self.commit(commit, ctx)? {
-            true => Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: applied.result, warnings, attempts: attempt, doc })),
-            false => Attempt::Conflict,
+            Some(bak_in_place) => {
+                push_stale_unless(&mut warnings, bak_in_place);
+                Attempt::Done(Box::new(ApplyOk { changed: true, rev: doc.rev, result: applied.result, warnings, attempts: attempt, doc }))
+            }
+            None => Attempt::Conflict,
         })
     }
 
     /// tmp + bak tmp -> seam -> CAS -> (quarantine link) -> rename tmp over todos.json -> rename bak tmp over .bak
-    /// (STORE.md sections 4 and 8). `Ok(false)` = CAS conflict, temp files removed.
-    fn commit(&self, c: Commit<'_>, ctx: &mut ApplyCtx) -> Result<bool, StoreError> {
+    /// (STORE.md sections 4 and 8). `Ok(None)` = CAS conflict, temp files removed; `Ok(Some(bak_in_place))` = committed,
+    /// and whether the .bak now equals the commit.
+    fn commit(&self, c: Commit<'_>, ctx: &mut ApplyCtx) -> Result<Option<bool>, StoreError> {
         let text = c.doc.to_json_pretty();
         let todos = self.todos_path();
         // Both files are complete before anything visible changes, so a write failure aborts the op uncommitted.
@@ -369,7 +387,7 @@ impl Store {
             _ => false,
         };
         if !still {
-            return Ok(false);
+            return Ok(None);
         }
 
         // Quarantine by hard link (byte-identical); copy as fallback. todos.json is only ever replaced by the rename
@@ -378,7 +396,7 @@ impl Store {
         if c.quarantine.is_some() {
             let q = QuarantineFile::new(self.home.join(format!("todos.corrupt-{}-{}.json", wall_clock_compact(), token())));
             if fs::hard_link(&todos, &q.path).is_err() {
-                fs::copy(&todos, &q.path).map_err(|e| StoreError::io("quarantine corrupt file", &e))?;
+                copy_atomic(&todos, &q.path).map_err(|e| StoreError::io("quarantine corrupt file", &e))?;
             }
             quarantine = Some(q);
         }
@@ -388,13 +406,15 @@ impl Store {
         if let Some(q) = quarantine.as_mut() {
             q.disarm();
         }
-        // .bak = the commit just made, swapped in atomically. Failing here (or a crash) leaves the previous .bak, one
-        // version behind; the commit is already durable and acknowledged.
-        if self.rename_retrying(&bak_tmp.path, &self.home.join(BAK)).is_ok() {
+        // .bak = the commit just made, swapped in atomically. The commit is already durable and acknowledged, so a rename
+        // that fails twice (or a crash here) leaves the previous .bak behind, and the envelope says so: backup_stale.
+        let bak = self.home.join(BAK);
+        let bak_in_place = self.rename_retrying(&bak_tmp.path, &bak).is_ok() || self.rename_retrying(&bak_tmp.path, &bak).is_ok();
+        if bak_in_place {
             bak_tmp.disarm();
         }
         sync_dir(&self.home);
-        Ok(true)
+        Ok(Some(bak_in_place))
     }
 
     /// Rename; EPERM/EACCES/EBUSY (Windows sharing violations) are retried 5 times, 20 ms apart.
@@ -724,6 +744,26 @@ fn base36(mut n: u64) -> String {
     String::from_utf8(out).expect("ascii")
 }
 
+fn push_stale_unless(warnings: &mut Vec<Warning>, bak_in_place: bool) {
+    if !bak_in_place && !warnings.contains(&Warning::BackupStale) {
+        warnings.push(Warning::BackupStale);
+    }
+}
+
+/// Copy `src` to `dst` so that `dst` is complete or absent (never a truncated file under its final name): the bytes go to
+/// `dst.part` first, then that is renamed into place. The `.part` file is removed on any failure.
+fn copy_atomic(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut part = dst.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let _ = fs::remove_file(&part); // a leftover of an earlier crash
+    let result = fs::copy(src, &part).and_then(|_| fs::rename(&part, dst));
+    if result.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    result
+}
+
 /// `/"rev"\s*:\s*(\d+)/` over lossily decoded text; first match wins; 0 if none.
 fn scrape_rev(raw: &[u8]) -> u64 {
     const MAX_SAFE: u64 = 9_007_199_254_740_992;
@@ -743,4 +783,47 @@ fn scrape_rev(raw: &[u8]) -> u64 {
         from = start + 1;
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_atomic;
+    use std::fs;
+
+    fn names(dir: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn copy_atomic_is_byte_exact_and_leaves_no_part_file() {
+        let t = tempfile::tempdir().unwrap();
+        let bytes = [0xffu8, 0xfe, b'{', 0x00, 0x80, b'\n'];
+        fs::write(t.path().join("src"), bytes).unwrap();
+        copy_atomic(&t.path().join("src"), &t.path().join("dst")).unwrap();
+        assert_eq!(fs::read(t.path().join("dst")).unwrap(), bytes);
+        assert_eq!(names(t.path()), vec!["dst", "src"]);
+    }
+
+    #[test]
+    fn copy_atomic_never_exposes_a_partial_destination_and_cleans_up_when_the_final_rename_fails() {
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join("src"), "payload").unwrap();
+        fs::create_dir(t.path().join("dst")).unwrap(); // a rename of a file onto a directory fails
+        assert!(copy_atomic(&t.path().join("src"), &t.path().join("dst")).is_err());
+        assert_eq!(names(t.path()), vec!["dst", "src"], "no .part file left behind");
+        assert!(t.path().join("dst").is_dir());
+    }
+
+    #[test]
+    fn copy_atomic_goes_through_a_part_name_so_the_final_name_is_complete_or_absent() {
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join("src"), "payload").unwrap();
+        // a stale leftover from an earlier crash must not break the next copy
+        fs::write(t.path().join("dst.part"), "half").unwrap();
+        copy_atomic(&t.path().join("src"), &t.path().join("dst")).unwrap();
+        assert_eq!(fs::read_to_string(t.path().join("dst")).unwrap(), "payload");
+        assert!(!t.path().join("dst.part").exists());
+    }
 }

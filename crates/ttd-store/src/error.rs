@@ -49,6 +49,7 @@ pub enum Warning {
     CorruptQuarantined,
     RestoredFromBak,
     StaleLockBroken,
+    BackupStale,
 }
 
 impl Warning {
@@ -57,6 +58,7 @@ impl Warning {
             Warning::CorruptQuarantined => "corrupt_quarantined",
             Warning::RestoredFromBak => "restored_from_bak",
             Warning::StaleLockBroken => "stale_lock_broken",
+            Warning::BackupStale => "backup_stale",
         }
     }
 }
