@@ -16,7 +16,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "tauri": "cd app && tauri",
     "smoke:app": "bun app/scripts/smoke.ts",
-    "verify": "bun run typecheck && bun run test:store && bun run test:ui && bun run build:ui && bun run test:e2e-ui && bun run test:rust && bun run test:mod && bun run smoke:app && bun run test:integration"
+    "verify": "bun run typecheck && bun run build:ui && bun run test:store && bun run test:ui && bun run test:e2e-ui && bun run test:rust && bun run test:mod && bun run smoke:app && bun run test:integration"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "21.0.4",

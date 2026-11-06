@@ -25,9 +25,10 @@ jobs:
           bun-version: 1.3.4
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # build first: the shim tests serve the built app/dist (gitignored)
+      - run: bun run build:ui
       - run: bun test store-node/test
       - run: bun test app/test
-      - run: bun run build:ui
 
   # The agent half: manifest validation and the engine-level mod tests (hooks/*.test.ts, in-memory host).
   # `claude plugin test` needs no login (checked locally with an empty HOME); e2e-mod runs real billed
