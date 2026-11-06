@@ -1,0 +1,9 @@
+{
+  "name": "ttd",
+  "version": "0.1.0",
+  "description": "Shared todo list for you and your Claude Code agent: six mcp__ttd__* tools, changed-only list context on each prompt, and a /ttd command that opens the TTD window.",
+  "author": { "name": "kristianDKAndersen" },
+  "repository": "https://github.com/kristianDKAndersen/ttd",
+  "keywords": ["todo", "tasks", "window", "mod"],
+  "types": "./types/index.d.ts"
+}

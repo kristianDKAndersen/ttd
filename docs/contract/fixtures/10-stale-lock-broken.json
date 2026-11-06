@@ -1,0 +1,63 @@
+{
+  "fixture": 1,
+  "name": "10-stale-lock-broken",
+  "description": "A lock directory exists whose owner.json ts is 60 s old (> lockStaleMs 15000), i.e. a crashed writer. The engine breaks it (rename lock dir to a unique name, then remove it), acquires, commits, and reports stale_lock_broken.",
+  "setup": {
+    "file": null,
+    "bak": null,
+    "lock": {
+      "ownerAgeMs": 60000
+    }
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T17:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t1",
+        "title": "After stale lock"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 1,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "After stale lock",
+            "body": "",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T17:00:00.000Z",
+            "updatedAt": "2026-01-01T17:00:00.000Z"
+          }
+        },
+        "warnings": [
+          "stale_lock_broken"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 1,
+      "items": [
+        {
+          "id": "t1",
+          "title": "After stale lock",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T17:00:00.000Z",
+          "updatedAt": "2026-01-01T17:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

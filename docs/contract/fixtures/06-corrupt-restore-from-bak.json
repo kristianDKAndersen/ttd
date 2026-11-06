@@ -1,0 +1,108 @@
+{
+  "fixture": 1,
+  "name": "06-corrupt-restore-from-bak",
+  "description": "The file does not parse. .bak is a byte-identical copy of the latest successfully committed todos.json (here rev 7, the same rev the torn text still shows), so restoring it loses no acknowledged write. A writer quarantines the corrupt file as todos.corrupt-<ts>-<token>.json (content byte-identical), takes the valid .bak as the base with rev = max(bak.rev, rev scraped from the corrupt text via /\"rev\"\\s*:\\s*(\\d+)/) = 7, applies the op and commits rev 8; the .bak is then rewritten to equal the new todos.json. Warnings are reported, never silent.",
+  "setup": {
+    "file": {
+      "raw": "{\"schemaVersion\":1,\"rev\":7,\"items\":[{\"id\":\"t1\",\"title\":\"half writ"
+    },
+    "bak": {
+      "schemaVersion": 1,
+      "rev": 7,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        }
+      ]
+    },
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T13:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t3",
+        "title": "Three"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 8,
+        "result": {
+          "item": {
+            "id": "t3",
+            "title": "Three",
+            "body": "",
+            "status": "todo",
+            "order": 2,
+            "createdAt": "2026-01-01T13:00:00.000Z",
+            "updatedAt": "2026-01-01T13:00:00.000Z"
+          }
+        },
+        "warnings": [
+          "corrupt_quarantined",
+          "restored_from_bak"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 8,
+      "items": [
+        {
+          "id": "t1",
+          "title": "One",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "t2",
+          "title": "Two",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "t3",
+          "title": "Three",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T13:00:00.000Z",
+          "updatedAt": "2026-01-01T13:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 1,
+    "quarantinedRaw": [
+      "{\"schemaVersion\":1,\"rev\":7,\"items\":[{\"id\":\"t1\",\"title\":\"half writ"
+    ],
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

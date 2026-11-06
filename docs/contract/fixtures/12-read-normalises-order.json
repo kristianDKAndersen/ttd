@@ -1,0 +1,123 @@
+{
+  "fixture": 1,
+  "name": "12-read-normalises-order",
+  "description": "read returns items sorted by (order, createdAt, id) with order renumbered 0..n-1 in the view; the file on disk is not modified by a read.",
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 9,
+      "items": [
+        {
+          "id": "c",
+          "title": "C",
+          "body": "",
+          "status": "todo",
+          "order": 5,
+          "createdAt": "2026-01-01T08:02:00.000Z",
+          "updatedAt": "2026-01-01T08:02:00.000Z"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "a",
+          "title": "A",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        }
+      ]
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T19:00:00.000Z",
+      "read": true,
+      "expect": {
+        "ok": true,
+        "doc": {
+          "schemaVersion": 1,
+          "rev": 9,
+          "items": [
+            {
+              "id": "a",
+              "title": "A",
+              "body": "",
+              "status": "todo",
+              "order": 0,
+              "createdAt": "2026-01-01T08:00:00.000Z",
+              "updatedAt": "2026-01-01T08:00:00.000Z"
+            },
+            {
+              "id": "b",
+              "title": "B",
+              "body": "",
+              "status": "todo",
+              "order": 1,
+              "createdAt": "2026-01-01T08:01:00.000Z",
+              "updatedAt": "2026-01-01T08:01:00.000Z"
+            },
+            {
+              "id": "c",
+              "title": "C",
+              "body": "",
+              "status": "todo",
+              "order": 2,
+              "createdAt": "2026-01-01T08:02:00.000Z",
+              "updatedAt": "2026-01-01T08:02:00.000Z"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 9,
+      "items": [
+        {
+          "id": "c",
+          "title": "C",
+          "body": "",
+          "status": "todo",
+          "order": 5,
+          "createdAt": "2026-01-01T08:02:00.000Z",
+          "updatedAt": "2026-01-01T08:02:00.000Z"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "a",
+          "title": "A",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": false
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "ttd",
+  "description": "TTD (Tiny Todo): a small always-on-top todo window that your Claude Code agent can read and edit.",
+  "owner": { "name": "kristianDKAndersen" },
+  "plugins": [
+    {
+      "name": "ttd",
+      "source": "./plugin",
+      "description": "Shared todo list for you and your Claude Code agent: six mcp__ttd__* tools, changed-only list context on each prompt, and a /ttd command that opens the TTD window."
+    }
+  ]
+}

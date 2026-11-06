@@ -1,0 +1,31 @@
+{
+  "name": "ttd",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test:store": "bun test store-node/test",
+    "test:ui": "bun test app/test",
+    "test:e2e-ui": "bun test app/e2e",
+    "test:mod": "claude plugin validate plugin && claude plugin validate . && claude plugin test plugin && bun test e2e-mod",
+    "test:rust": "export PATH=\"$HOME/.cargo/bin:$PATH\"; cargo test --workspace",
+    "test:integration": "bun test integration",
+    "shim": "bun store-node/shim.ts",
+    "dev:ui": "vite --config app/vite.config.ts",
+    "build:ui": "vite build --config app/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "tauri": "cd app && tauri",
+    "smoke:app": "bun app/scripts/smoke.ts",
+    "verify": "bun run typecheck && bun run build:ui && bun run test:store && bun run test:ui && bun run test:e2e-ui && bun run test:rust && bun run test:mod && bun run smoke:app && bun run test:integration"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "21.0.4",
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/bun": "1.4.4",
+    "happy-dom": "21.0.4",
+    "playwright-core": "1.65.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.6"
+  }
+}

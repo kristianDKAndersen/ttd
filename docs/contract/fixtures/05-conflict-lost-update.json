@@ -1,0 +1,146 @@
+{
+  "fixture": 1,
+  "name": "05-conflict-lost-update",
+  "description": "Another writer commits (rev 3->4) between our read and our commit (a lock violation / stale-lock break simulated by the harness replacing the file at the beforeCommit seam). The engine must detect the rev change, discard its temp file, re-read, RE-APPLY the op against the new base (a1 gets order 3, not 2) and commit rev 5 containing both writers' changes. attempts must be 2.",
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 3,
+      "items": [
+        {
+          "id": "x",
+          "title": "X",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "y",
+          "title": "Y",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        }
+      ]
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T10:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "a1",
+        "title": "Mine"
+      },
+      "seam": {
+        "beforeCommit": {
+          "replaceFile": {
+            "schemaVersion": 1,
+            "rev": 4,
+            "items": [
+              {
+                "id": "x",
+                "title": "X",
+                "body": "",
+                "status": "done",
+                "order": 0,
+                "createdAt": "2026-01-01T08:00:00.000Z",
+                "updatedAt": "2026-01-01T09:50:00.000Z"
+              },
+              {
+                "id": "y",
+                "title": "Y",
+                "body": "",
+                "status": "todo",
+                "order": 1,
+                "createdAt": "2026-01-01T08:01:00.000Z",
+                "updatedAt": "2026-01-01T08:01:00.000Z"
+              },
+              {
+                "id": "f1",
+                "title": "Foreign",
+                "body": "",
+                "status": "todo",
+                "order": 2,
+                "createdAt": "2026-01-01T09:50:00.000Z",
+                "updatedAt": "2026-01-01T09:50:00.000Z"
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 5,
+        "result": {
+          "item": {
+            "id": "a1",
+            "title": "Mine",
+            "body": "",
+            "status": "todo",
+            "order": 3,
+            "createdAt": "2026-01-01T10:00:00.000Z",
+            "updatedAt": "2026-01-01T10:00:00.000Z"
+          }
+        },
+        "attempts": 2
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 5,
+      "items": [
+        {
+          "id": "x",
+          "title": "X",
+          "body": "",
+          "status": "done",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T09:50:00.000Z"
+        },
+        {
+          "id": "y",
+          "title": "Y",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "f1",
+          "title": "Foreign",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T09:50:00.000Z",
+          "updatedAt": "2026-01-01T09:50:00.000Z"
+        },
+        {
+          "id": "a1",
+          "title": "Mine",
+          "body": "",
+          "status": "todo",
+          "order": 3,
+          "createdAt": "2026-01-01T10:00:00.000Z",
+          "updatedAt": "2026-01-01T10:00:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": ["bun"]
+  },
+  "include": ["app/src", "store-node", "plugin/hooks/store", "app/test", "app/e2e"],
+  "exclude": [
+    "node_modules",
+    "target",
+    "app/dist",
+    "plugin/hooks/register.ts",
+    "plugin/hooks/mod-io.ts",
+    "plugin/hooks/tools.ts",
+    "plugin/hooks/context.ts",
+    "plugin/hooks/launcher.ts"
+  ]
+}

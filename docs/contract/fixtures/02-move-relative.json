@@ -1,0 +1,234 @@
+{
+  "fixture": 1,
+  "name": "02-move-relative",
+  "description": "move is relative (after: id|null), renumbers order 0..n-1, does NOT bump updatedAt, no-op when position is unchanged, self-reference is invalid_op, unknown ids are not_found.",
+  "setup": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 10,
+      "items": [
+        {
+          "id": "a",
+          "title": "A",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "c",
+          "title": "C",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T08:02:00.000Z",
+          "updatedAt": "2026-01-01T08:02:00.000Z"
+        },
+        {
+          "id": "d",
+          "title": "D",
+          "body": "",
+          "status": "todo",
+          "order": 3,
+          "createdAt": "2026-01-01T08:03:00.000Z",
+          "updatedAt": "2026-01-01T08:03:00.000Z"
+        }
+      ]
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T10:00:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "d",
+        "after": null
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 11,
+        "result": {
+          "item": {
+            "id": "d",
+            "title": "D",
+            "body": "",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T08:03:00.000Z",
+            "updatedAt": "2026-01-01T08:03:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T10:01:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "a",
+        "after": "c"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 12,
+        "result": {
+          "item": {
+            "id": "a",
+            "title": "A",
+            "body": "",
+            "status": "todo",
+            "order": 3,
+            "createdAt": "2026-01-01T08:00:00.000Z",
+            "updatedAt": "2026-01-01T08:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T10:02:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "b",
+        "after": "b"
+      },
+      "expect": {
+        "ok": false,
+        "error": "invalid_op"
+      }
+    },
+    {
+      "now": "2026-01-01T10:03:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "c",
+        "after": "zzz"
+      },
+      "expect": {
+        "ok": false,
+        "error": "not_found"
+      }
+    },
+    {
+      "now": "2026-01-01T10:04:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "zzz",
+        "after": null
+      },
+      "expect": {
+        "ok": false,
+        "error": "not_found"
+      }
+    },
+    {
+      "now": "2026-01-01T10:05:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "c",
+        "after": "b"
+      },
+      "expect": {
+        "ok": true,
+        "changed": false,
+        "rev": 12,
+        "result": {
+          "item": {
+            "id": "c",
+            "title": "C",
+            "body": "",
+            "status": "todo",
+            "order": 2,
+            "createdAt": "2026-01-01T08:02:00.000Z",
+            "updatedAt": "2026-01-01T08:02:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "now": "2026-01-01T10:06:00.000Z",
+      "op": {
+        "op": "move",
+        "id": "d",
+        "after": "a"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 13,
+        "result": {
+          "item": {
+            "id": "d",
+            "title": "D",
+            "body": "",
+            "status": "todo",
+            "order": 3,
+            "createdAt": "2026-01-01T08:03:00.000Z",
+            "updatedAt": "2026-01-01T08:03:00.000Z"
+          }
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 13,
+      "items": [
+        {
+          "id": "b",
+          "title": "B",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T08:01:00.000Z",
+          "updatedAt": "2026-01-01T08:01:00.000Z"
+        },
+        {
+          "id": "c",
+          "title": "C",
+          "body": "",
+          "status": "todo",
+          "order": 1,
+          "createdAt": "2026-01-01T08:02:00.000Z",
+          "updatedAt": "2026-01-01T08:02:00.000Z"
+        },
+        {
+          "id": "a",
+          "title": "A",
+          "body": "",
+          "status": "todo",
+          "order": 2,
+          "createdAt": "2026-01-01T08:00:00.000Z",
+          "updatedAt": "2026-01-01T08:00:00.000Z"
+        },
+        {
+          "id": "d",
+          "title": "D",
+          "body": "",
+          "status": "todo",
+          "order": 3,
+          "createdAt": "2026-01-01T08:03:00.000Z",
+          "updatedAt": "2026-01-01T08:03:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}

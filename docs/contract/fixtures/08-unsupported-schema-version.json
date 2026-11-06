@@ -1,0 +1,48 @@
+{
+  "fixture": 1,
+  "name": "08-unsupported-schema-version",
+  "description": "schemaVersion greater than the implementation supports (1): reads and writes fail with unsupported_version; the file is not quarantined, not rewritten, not migrated down.",
+  "setup": {
+    "file": {
+      "schemaVersion": 2,
+      "rev": 4,
+      "items": [],
+      "newField": true
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T15:00:00.000Z",
+      "read": true,
+      "expect": {
+        "ok": false,
+        "error": "unsupported_version"
+      }
+    },
+    {
+      "now": "2026-01-01T15:01:00.000Z",
+      "op": {
+        "op": "add",
+        "title": "nope"
+      },
+      "expect": {
+        "ok": false,
+        "error": "unsupported_version"
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 2,
+      "rev": 4,
+      "items": [],
+      "newField": true
+    },
+    "quarantined": 0,
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": false
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "fixture": 1,
+  "name": "07-corrupt-no-backup-refuse-then-reset",
+  "description": "Corrupt file and no valid .bak: every write op is refused (corrupt_no_backup) and the file is left untouched - an empty list is NEVER written over an unparseable file. read reports corrupt. Only the explicit reset_corrupt op quarantines the file and starts a fresh doc at rev = scraped rev + 1 (no rev in the text -> 1). reset_corrupt on a healthy file is not_corrupt.",
+  "setup": {
+    "file": {
+      "raw": "{not json"
+    },
+    "bak": null,
+    "lock": null
+  },
+  "steps": [
+    {
+      "now": "2026-01-01T14:00:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t1",
+        "title": "Refused"
+      },
+      "expect": {
+        "ok": false,
+        "error": "corrupt_no_backup"
+      }
+    },
+    {
+      "now": "2026-01-01T14:01:00.000Z",
+      "read": true,
+      "expect": {
+        "ok": false,
+        "error": "corrupt"
+      }
+    },
+    {
+      "now": "2026-01-01T14:02:00.000Z",
+      "op": {
+        "op": "reset_corrupt"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 1,
+        "result": {},
+        "warnings": [
+          "corrupt_quarantined"
+        ]
+      }
+    },
+    {
+      "now": "2026-01-01T14:03:00.000Z",
+      "op": {
+        "op": "reset_corrupt"
+      },
+      "expect": {
+        "ok": false,
+        "error": "not_corrupt"
+      }
+    },
+    {
+      "now": "2026-01-01T14:04:00.000Z",
+      "op": {
+        "op": "add",
+        "id": "t1",
+        "title": "After reset"
+      },
+      "expect": {
+        "ok": true,
+        "changed": true,
+        "rev": 2,
+        "result": {
+          "item": {
+            "id": "t1",
+            "title": "After reset",
+            "body": "",
+            "status": "todo",
+            "order": 0,
+            "createdAt": "2026-01-01T14:04:00.000Z",
+            "updatedAt": "2026-01-01T14:04:00.000Z"
+          }
+        }
+      }
+    }
+  ],
+  "final": {
+    "file": {
+      "schemaVersion": 1,
+      "rev": 2,
+      "items": [
+        {
+          "id": "t1",
+          "title": "After reset",
+          "body": "",
+          "status": "todo",
+          "order": 0,
+          "createdAt": "2026-01-01T14:04:00.000Z",
+          "updatedAt": "2026-01-01T14:04:00.000Z"
+        }
+      ]
+    },
+    "quarantined": 1,
+    "quarantinedRaw": [
+      "{not json"
+    ],
+    "lockDir": false,
+    "tmpFiles": 0,
+    "bakExists": true,
+    "bakEqualsFile": true
+  }
+}
