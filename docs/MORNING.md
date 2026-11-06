@@ -18,18 +18,33 @@ The beta works on this Mac. The TTD window is open (always on top) with one welc
 
 Data lives in `~/.ttd/todos.json`, with `todos.json.bak` as a copy of the latest good version.
 
-## What was verified (`bun run verify`, exit 0, final run)
+## What was verified (final commit `4431e54`, every step exit 0)
 
 | Area | Result |
 |---|---|
-| TS store core + CLI + watcher | 136 pass, incl. 13+1 contract fixtures, 4x25 concurrent processes, stale-lock race tests |
-| Rust store crate | 112 pass across 5 suites, clippy clean |
-| Window UI (happy-dom) | 95 pass |
+| TS store core + CLI + watcher | 152 pass, incl. 15 contract fixtures, 4x25 concurrent processes, stale-lock race tests, strict UTF-8 |
+| Rust store crate | 121 pass across 6 suites, clippy clean |
+| Window UI (happy-dom) | 97 pass |
 | UI in real Chrome against the dev shim | 14 pass (add, live external update, real mouse drag, colours light/dark, delete, corrupt recovery) |
-| Tauri window smoke | 7/7: always-on-top, 320x480, external change rendered in about 0.4 s, position remembered, single instance, breadcrumb |
-| Claude Code plugin | `claude plugin validate` OK (plugin + marketplace), 53 unit tests, 10 real `claude -p` end-to-end tests |
+| Tauri window smoke | 7/7 at `00b1916`: always-on-top, 320x480, external change rendered in about 0.4 s, position remembered, single instance, breadcrumb. Not re-run at `4431e54` because your TTD window was open; the window's Rust code did not change after that run. |
+| Claude Code plugin | `claude plugin validate` OK (plugin + marketplace), 55 unit tests, 11 real `claude -p` end-to-end tests |
 | Cross-process integration | 7 pass. One run had 582 writes from TS, Rust and plugin writers at once with nothing lost; also `kill -9` crash recovery and corrupt-file recovery across all three |
-| Agent in the loop | Haiku, with the plugin loaded, used the add tool on its own and the todo landed in the file |
+| Agent in the loop | At `00b1916`, Haiku with the plugin loaded called `add`, then `set_status`, on its own, and the file showed the todo as in progress |
+
+The release app was rebuilt from `4431e54` and relaunched. I couldn't screenshot the window because the screensaver was on, so its look is unchecked; the process is running and found your `~/.ttd`.
+
+The last check run needed `caffeinate -i`. Without it, the Mac idle-slept in the middle of tests: one test logged 15 minutes against a 45-second limit. Those failures were stalls, not real failures. If you see similar timeouts locally, run `caffeinate -i bun run verify`.
+
+## Code reviews
+
+Three independent reviews ran over the branch (full branch, fix round 1, fix round 2). Together they found 0 Blockers, 3 Majors and about 17 Minors, and no security issues. Security covered XSS, shell injection (11 hostile `TTD_HOME` names were tried), the window's CSP and capabilities, the dev shim, and breaking out of the agent context block.
+
+All 3 Majors are fixed:
+- Recovery rolled back your last change.
+- A failed `.bak` write went unreported.
+- A file with non-UTF-8 bytes could be silently rewritten, damaging the backup too.
+
+The remaining Minors are listed below.
 
 ## Decisions I made while you slept (please check)
 
@@ -44,6 +59,8 @@ Data lives in `~/.ttd/todos.json`, with `todos.json.bak` as a copy of the latest
 - Rust spun forever on a lock it could not remove. It now times out properly.
 - Recovery from a damaged file rolled back the last change (decision 3 above).
 - The plugin's rename could nest a directory. `/ttd` could launch a dev build that showed a blank window.
+- A `.bak` rename failure after a commit was swallowed. It is now retried once, then reported as `backup_stale`. A restore from a backup older than the damaged file also reports `backup_stale`, and the window and the agent both say so.
+- The plugin read files lossily: invalid UTF-8 became U+FFFD and was written back, into the backup too. It now reads bytes and decodes strictly, so a damaged file is quarantined, not rewritten.
 
 ## Not verified / open
 
@@ -52,7 +69,11 @@ Data lives in `~/.ttd/todos.json`, with `todos.json.bak` as a copy of the latest
 - **Minor follow-ups from the review:**
   - Rust spins with no backoff if `store.lock` is a dangling symlink.
   - TS and Rust disagree on an owner `ts` written as `1e3`.
-  - (Fixed in the review's third round.) A `.bak` rename failure after a commit used to be swallowed; it is now retried once and reported as `backup_stale`, and a restore from a backup that is behind the damaged file reports it too.
+  - A crash during a write can leave a `.todos.json.tmp-*` file behind. No reader is affected, and nothing cleans these files up.
+  - The TS writers don't `fsync`, so a power cut can lose the very latest write.
+  - There is no undo when the agent deletes something by mistake: `.bak` is now the latest version, not the previous one.
+  - On Windows, the plugin's rename doesn't refuse a directory destination the way the macOS and Linux version does.
+  - The restore notice is one-sided: it shows only on the write that recovered, not on later reads.
 - **No LICENSE yet.** That is your call.
 
 ## Things only you can do
