@@ -438,3 +438,42 @@ describe("static files", () => {
     expect(await res.text()).toContain('<div id="app">')
   })
 })
+
+describe("parent death", () => {
+  test("the shim exits on its own when its parent is SIGKILLed", async () => {
+    const home = tmp("ttd-shim-home-")
+    const script = `
+      const p = Bun.spawn(["bun", ${JSON.stringify(SHIM)}], { stdout: "pipe", stderr: "ignore" })
+      await p.stdout.getReader().read()
+      console.log(p.pid)
+      setInterval(() => {}, 1000)
+    `
+    const parent = Bun.spawn(["bun", "-e", script], {
+      env: { ...(process.env as Record<string, string>), TTD_HOME: home, TTD_SHIM_PORT: "0" },
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    let shimPid = 0
+    try {
+      shimPid = Number(await firstLine(parent.stdout as ReadableStream<Uint8Array>, 10_000))
+      expect(shimPid).toBeGreaterThan(1)
+      expect(alive(shimPid)).toBe(true)
+      parent.kill("SIGKILL")
+      await parent.exited
+      const deadline = Date.now() + 3000
+      while (alive(shimPid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+      expect(alive(shimPid)).toBe(false)
+    } finally {
+      parent.kill("SIGKILL")
+      if (shimPid > 1 && alive(shimPid)) process.kill(shimPid, "SIGKILL")
+    }
+  })
+})

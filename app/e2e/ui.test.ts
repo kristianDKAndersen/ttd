@@ -71,8 +71,9 @@ async function withApp(
   tmps.push(home)
   const childEnv = { ...(process.env as Record<string, string>), TTD_HOME: home }
   const proc = Bun.spawn(["bun", SHIM], { env: { ...childEnv, TTD_SHIM_PORT: "0" }, stdout: "pipe", stderr: "pipe" })
-  const ctx = await browser.newContext({ viewport: opts.viewport ?? { width: 360, height: 640 }, deviceScaleFactor: opts.scale ?? 1 })
+  let ctx: Awaited<ReturnType<Browser["newContext"]>> | undefined
   try {
+    ctx = await browser.newContext({ viewport: opts.viewport ?? { width: 360, height: 640 }, deviceScaleFactor: opts.scale ?? 1 })
     const info = JSON.parse(await firstLine(proc.stdout as ReadableStream<Uint8Array>, 10_000)) as { listening: string; home: string }
     expect(info.home).toBe(home) // the shim must be on the temp home, never ~/.ttd
     const page = await ctx.newPage()
@@ -99,8 +100,8 @@ async function withApp(
     await body(env)
     expect(errors).toEqual([]) // no uncaught page exception during the scenario
   } finally {
-    await ctx.close()
-    proc.kill()
+    proc.kill() // first: a failing ctx.close() must not skip it
+    await ctx?.close()
   }
 }
 
@@ -768,5 +769,17 @@ describe("E9 screenshots of the add and edit forms", () => {
       { viewport: { width: 320, height: 480 }, scale: 2 },
     )
     for (const f of ["6-add-form.png", "7-edit-form.png"]) expect(Bun.file(join(OUT, f)).size).toBeGreaterThan(2000)
+  })
+})
+
+describe("harness cleanup", () => {
+  // Must stay the last test: it closes the shared browser.
+  test("withApp reaps the shim it spawned when the browser is already gone", async () => {
+    const count = () => Bun.spawnSync(["pgrep", "-f", "store-node/shim.ts"]).stdout.toString().split("\n").filter(Boolean).length
+    const before = count()
+    await browser.close()
+    await expect(withApp(async () => {})).rejects.toBeDefined()
+    await Bun.sleep(1500)
+    expect(count()).toBe(before)
   })
 })

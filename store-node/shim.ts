@@ -259,6 +259,21 @@ export function main(env: Env, out: (l: string) => void, err: (l: string) => voi
   const bye = () => void shim.stop().then(() => process.exit(0))
   process.on("SIGINT", bye)
   process.on("SIGTERM", bye)
+  // Exit when the spawning process dies (SIGKILL sends no signal here), so a crashed runner leaves no orphan.
+  // Probe the start-time parent pid: Bun's process.ppid is cached and never changes after reparenting.
+  // Skipped when already orphaned at start (ppid 1), e.g. deliberately daemonized.
+  const parent = process.ppid
+  if (parent > 1) {
+    const poll = setInterval(() => {
+      try {
+        process.kill(parent, 0)
+      } catch (e) {
+        if ((e as { code?: string }).code !== "ESRCH") return
+        clearInterval(poll)
+        bye()
+      }
+    }, 500)
+  }
   return 0
 }
 
