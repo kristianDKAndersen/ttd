@@ -1,12 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core defaults, header drag, own close button, window-state.",
+  "description": "Main window: core defaults, header drag, own close button.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-close",
-    "window-state:default"
+    "core:window:allow-close"
   ]
 }
